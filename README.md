@@ -54,14 +54,20 @@ tmux-resurrect's save file, so you need:
 
 ## Install (TPM)
 
-Run the installer — it finds the right slot in `~/.tmux.conf` automatically (after
-resurrect, before continuum) and splices the line in for you:
-
 ```sh
-bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/install_tpm.sh
+curl -fsSL https://raw.githubusercontent.com/bmohan01/tmux-ai-sessions-restore/main/install.sh | bash
 ```
 
-Or add the line manually. **Order matters: load this after resurrect but _before_ continuum** —
+Then inside tmux: **`prefix + I`**
+
+That's it. The script clones the repo and splices the `@plugin` line into `~/.tmux.conf`
+at the right slot (after resurrect, before continuum). `prefix + I` tells TPM to finish
+the install and register the Claude/Kiro hooks.
+
+<details>
+<summary>Manual install</summary>
+
+Add to `~/.tmux.conf`. **Order matters: load this after resurrect but _before_ continuum** —
 it must set `@resurrect-processes` before continuum starts its (backgrounded) auto-restore,
 otherwise restore brings back your layout with bare shells.
 
@@ -74,7 +80,9 @@ set -g @plugin 'tmux-plugins/tmux-continuum'
 run '~/.tmux/plugins/tpm/tpm'
 ```
 
-Then `prefix + I` to install — exactly like resurrect/continuum.
+Then `prefix + I` to install.
+
+</details>
 
 ### What this writes outside tmux (and how to opt out)
 
