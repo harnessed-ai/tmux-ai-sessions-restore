@@ -54,14 +54,21 @@ tmux-resurrect's save file, so you need:
 
 ## Install (TPM)
 
-Add to `~/.tmux.conf`. **Order matters: load this after resurrect but _before_ continuum** —
+Run the installer — it finds the right slot in `~/.tmux.conf` automatically (after
+resurrect, before continuum) and splices the line in for you:
+
+```sh
+bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/install_tpm.sh
+```
+
+Or add the line manually. **Order matters: load this after resurrect but _before_ continuum** —
 it must set `@resurrect-processes` before continuum starts its (backgrounded) auto-restore,
 otherwise restore brings back your layout with bare shells.
 
 ```tmux
 set -g @continuum-restore 'on'
 set -g @plugin 'tmux-plugins/tmux-resurrect'
-set -g @plugin '<you>/tmux-ai-sessions-restore'
+set -g @plugin 'bmohan01/tmux-ai-sessions-restore'
 set -g @plugin 'tmux-plugins/tmux-continuum'
 
 run '~/.tmux/plugins/tpm/tpm'
