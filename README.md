@@ -26,8 +26,9 @@ reboot ─▶ resurrect/continuum restore panes + cwd ─▶ this plugin relaunc
 2. **Save** — a `@resurrect-hook-post-save-all` hook reads those pane-options and rewrites
    the matching pane's command in resurrect's own save file to a resume command
    (`claude --resume <id>` / `kiro-cli chat --resume-id <id>`). It only rewrites a pane
-   whose foreground process *is actually the tool* right now, so a stale marker left on a
-   pane you've since reused for something else is ignored.
+   that is *actually running the tool* right now — detected via the pane's process subtree,
+   so it sees through shell-integration wrappers (kiro-cli's `kiro-cli-term`, Amazon Q's
+   figterm) and still skips stale markers on panes you've since reused.
 3. **Restore** — resurrect replays that command unchanged, in the pane's saved cwd.
 
 resurrect only re-runs a pane's saved command if it matches `@resurrect-processes`, so the
@@ -39,10 +40,15 @@ directory** — where "resume the latest conversation" would collapse them all o
 
 ## Requirements
 
+This is an **add-on layer — it does nothing on its own.** It rewrites entries in
+tmux-resurrect's save file, so you need:
+
+- [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) — **required** (owns the
+  save file this plugin rewrites, and replays the resume command on restore)
+- [tmux-continuum](https://github.com/tmux-plugins/tmux-continuum) — **required for the
+  automatic reboot→restore experience**; without it you save/restore by hand with
+  `prefix + Ctrl-s` / `prefix + Ctrl-r`
 - tmux ≥ 3.0 (pane-level user options)
-- [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) (required) and
-  [tmux-continuum](https://github.com/tmux-plugins/tmux-continuum) (recommended, for
-  automatic save + restore-on-boot)
 - `jq`
 - `claude` and/or `kiro-cli` on your `PATH`
 
@@ -63,16 +69,23 @@ run '~/.tmux/plugins/tpm/tpm'
 
 Then `prefix + I` to install — exactly like resurrect/continuum.
 
-On first load the plugin registers the per-tool capture hooks for you (idempotent). If you
-prefer to do that yourself, set `@ai-restore-auto-install 'off'` and run:
+### What this writes outside tmux (and how to opt out)
+
+Unlike resurrect (which is pure tmux), this plugin needs a hook **inside each AI tool** to
+learn a pane's session id. On first load it registers them for you (idempotent):
+
+- `~/.claude/settings.json` — a `UserPromptSubmit` hook
+- your default Kiro agent `~/.kiro/agents/kiro_default.json` — a `userPromptSubmit` hook
+  (materialised from the built-in default agent if you don't already have one on disk)
+
+Each hook only stamps a tmux pane-option and does nothing else. To manage it yourself
+instead of letting the plugin do it:
 
 ```sh
-~/.tmux/plugins/tmux-ai-sessions-restore/scripts/install_hooks.sh
+set -g @ai-restore-auto-install 'off'   # in tmux.conf: disable auto-install on load
+scripts/install_hooks.sh                # then register the hooks manually
+scripts/uninstall_hooks.sh              # remove them anytime
 ```
-
-This adds a `UserPromptSubmit` hook to `~/.claude/settings.json` and a `userPromptSubmit`
-hook to your default Kiro agent (`~/.kiro/agents/kiro_default.json`, materialised from the
-built-in if needed). Remove them anytime with `scripts/uninstall_hooks.sh`.
 
 > Already-running AI sessions are picked up the **next time you send a prompt** in them;
 > sessions that were never captured fall back to a normal cold launch.
@@ -105,7 +118,7 @@ tmux show -p -t <that-pane> -v @ai_session_id      # prints a UUID
 
 # 3. save, then check resurrect baked in a resume command
 tmux run-shell ~/.tmux/plugins/tmux-resurrect/scripts/save.sh
-grep -- '--resume' ~/.tmux/resurrect/last
+grep -- '--resume' ~/.local/share/tmux/resurrect/last    # older resurrect: ~/.tmux/resurrect/last
 
 # 4. kill the server and restore
 tmux kill-server
