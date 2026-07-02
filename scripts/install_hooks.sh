@@ -24,13 +24,15 @@ install_claude() {
 	mkdir -p "$(dirname "$settings")"
 	[ -f "$settings" ] || echo '{}' > "$settings"
 	local tmp; tmp="$(mktemp)"
+	# Drop any prior capture_session.sh entry (even one at a different path — e.g. the plugin
+	# moved between ~/.tmux/plugins and ~/.config/tmux/plugins), then add exactly one. This
+	# keeps re-installs from a new location idempotent instead of stacking duplicate hooks.
 	jq --arg cmd "$cmd" '
 		.hooks = (.hooks // {})
-		| .hooks.UserPromptSubmit = (.hooks.UserPromptSubmit // [])
-		| if any(.hooks.UserPromptSubmit[]?; (.hooks[]?.command) == $cmd)
-		  then .
-		  else .hooks.UserPromptSubmit += [ { "hooks": [ { "type": "command", "command": $cmd } ] } ]
-		  end
+		| .hooks.UserPromptSubmit = ([
+			.hooks.UserPromptSubmit[]?
+			| select( any(.hooks[]?; (.command // "") | contains("capture_session.sh")) | not )
+		  ] + [ { "hooks": [ { "type": "command", "command": $cmd } ] } ])
 	' "$settings" > "$tmp" && mv "$tmp" "$settings"
 	echo "✓ Claude UserPromptSubmit hook → $settings"
 }
@@ -67,13 +69,14 @@ install_kiro() {
 	fi
 
 	local tmp; tmp="$(mktemp)"
+	# Same self-healing dedup as Claude: drop any prior capture_session.sh entry (any path)
+	# then add exactly one, so re-installing from a moved location never stacks duplicates.
 	jq --arg cmd "$cmd" '
 		.hooks = (.hooks // {})
-		| .hooks.userPromptSubmit = (.hooks.userPromptSubmit // [])
-		| if any(.hooks.userPromptSubmit[]?; .command == $cmd)
-		  then .
-		  else .hooks.userPromptSubmit += [ { "command": $cmd } ]
-		  end
+		| .hooks.userPromptSubmit = ([
+			.hooks.userPromptSubmit[]?
+			| select( (.command // "") | contains("capture_session.sh") | not )
+		  ] + [ { "command": $cmd } ])
 	' "$file" > "$tmp" && mv "$tmp" "$file"
 	echo "✓ Kiro userPromptSubmit hook → $file (default agent: $def)"
 }

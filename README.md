@@ -70,8 +70,16 @@ bash ~/path/to/tmux-ai-sessions-restore/install.sh
 
 ```sh
 tmux source ~/.config/tmux/tmux.conf   # or ~/.tmux.conf
-bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/install_hooks.sh
+# resolve wherever the plugin landed, then register the hooks:
+DIR="$HOME/.tmux/plugins/tmux-ai-sessions-restore"
+[ -d "$DIR" ] || DIR="$HOME/.config/tmux/plugins/tmux-ai-sessions-restore"
+bash "$DIR/scripts/install_hooks.sh"
 ```
+
+> **Where the plugin lives:** TPM installs into `~/.tmux/plugins/` when your config is
+> `~/.tmux.conf`, but into `~/.config/tmux/plugins/` when your config is
+> `~/.config/tmux/tmux.conf` (XDG). The snippet above resolves either. TPM users don't
+> normally need this — the plugin registers the hooks itself on first load.
 
 <details>
 <summary>Manual install</summary>
@@ -107,8 +115,11 @@ instead of letting the plugin do it:
 
 ```sh
 set -g @ai-restore-auto-install 'off'   # in tmux.conf: disable auto-install on load
-bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/install_hooks.sh    # register the hooks manually
-bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/uninstall_hooks.sh  # remove them anytime
+# DIR resolves to wherever the plugin was installed (see note above):
+DIR="$HOME/.tmux/plugins/tmux-ai-sessions-restore"
+[ -d "$DIR" ] || DIR="$HOME/.config/tmux/plugins/tmux-ai-sessions-restore"
+bash "$DIR/scripts/install_hooks.sh"     # register the hooks manually
+bash "$DIR/scripts/uninstall_hooks.sh"   # remove them anytime
 ```
 
 > Already-running AI sessions are picked up the **next time you send a prompt** in them;
@@ -198,7 +209,10 @@ is a descendant of the tmux pane's process (`#{pane_pid}`), not a detached termi
 ## Uninstall
 
 ```sh
-bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/uninstall_hooks.sh   # remove the Claude/Kiro capture hooks
+# resolve wherever the plugin landed, then remove the Claude/Kiro capture hooks:
+DIR="$HOME/.tmux/plugins/tmux-ai-sessions-restore"
+[ -d "$DIR" ] || DIR="$HOME/.config/tmux/plugins/tmux-ai-sessions-restore"
+bash "$DIR/scripts/uninstall_hooks.sh"
 ```
 
 Then remove the `@plugin` line and restart tmux to drop the resurrect save hook.

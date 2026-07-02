@@ -20,8 +20,15 @@ HOOK_CMD="bash '$CURRENT_DIR/scripts/rewrite_save.sh'"
 # Append our rewriter to resurrect's post-save hook without clobbering an existing value.
 existing="$(tmux show-option -gqv '@resurrect-hook-post-save-all' 2>/dev/null)"
 case "$existing" in
+	*"$HOOK_CMD"*)
+		: # already wired to this exact path
+		;;
 	*rewrite_save.sh*)
-		: # already wired
+		# Wired to a *different* rewrite_save.sh path — e.g. the plugin moved between
+		# ~/.tmux/plugins and ~/.config/tmux/plugins. Rewrite that stale segment to the
+		# current path so the hook doesn't point at a script that no longer exists.
+		new="$(printf '%s' "$existing" | sed -E "s#bash '[^']*rewrite_save\.sh'#${HOOK_CMD}#g")"
+		tmux set-option -g '@resurrect-hook-post-save-all' "$new"
 		;;
 	'')
 		tmux set-option -g '@resurrect-hook-post-save-all' "$HOOK_CMD"
