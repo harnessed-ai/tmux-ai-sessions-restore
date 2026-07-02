@@ -17,13 +17,24 @@ ok()   { echo "✓ $*"; }
 info() { echo "• $*"; }
 
 # ── resolve config path ───────────────────────────────────────────────────────
+# Prefer whichever existing config already references resurrect/continuum.
+# Falls back to ~/.tmux.conf, then XDG, then creates ~/.tmux.conf.
+
+_xdg="${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf"
 
 if [ -n "${TMUX_CONF:-}" ]; then
     CONF="$TMUX_CONF"
+elif grep -qlE "tmux-resurrect|tmux-continuum" "$HOME/.tmux.conf" "$_xdg" 2>/dev/null; then
+    # Pick the first file that contains a resurrect/continuum reference
+    if grep -qE "tmux-resurrect|tmux-continuum" "$HOME/.tmux.conf" 2>/dev/null; then
+        CONF="$HOME/.tmux.conf"
+    else
+        CONF="$_xdg"
+    fi
 elif [ -f "$HOME/.tmux.conf" ]; then
     CONF="$HOME/.tmux.conf"
-elif [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" ]; then
-    CONF="${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf"
+elif [ -f "$_xdg" ]; then
+    CONF="$_xdg"
 else
     CONF="$HOME/.tmux.conf"
 fi
