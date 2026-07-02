@@ -64,11 +64,14 @@ Or if you already have the repo cloned locally:
 bash ~/path/to/tmux-ai-sessions-restore/install.sh
 ```
 
-Then inside tmux: **`prefix + I`**
+**TPM users** — inside tmux press **`prefix + I`** and you're done. TPM installs the plugin and registers the Claude/Kiro hooks automatically.
 
-That's it. The script clones the repo (or uses your local copy) and splices the plugin line
-into your tmux config at the right slot (after resurrect, before continuum). `prefix + I`
-tells TPM to finish the install and register the Claude/Kiro hooks.
+**Non-TPM / run-shell users** — source your config, then register the hooks manually:
+
+```sh
+tmux source ~/.config/tmux/tmux.conf   # or ~/.tmux.conf
+bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/install_hooks.sh
+```
 
 <details>
 <summary>Manual install</summary>
@@ -104,8 +107,8 @@ instead of letting the plugin do it:
 
 ```sh
 set -g @ai-restore-auto-install 'off'   # in tmux.conf: disable auto-install on load
-scripts/install_hooks.sh                # then register the hooks manually
-scripts/uninstall_hooks.sh              # remove them anytime
+bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/install_hooks.sh    # register the hooks manually
+bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/uninstall_hooks.sh  # remove them anytime
 ```
 
 > Already-running AI sessions are picked up the **next time you send a prompt** in them;
@@ -195,7 +198,7 @@ is a descendant of the tmux pane's process (`#{pane_pid}`), not a detached termi
 ## Uninstall
 
 ```sh
-scripts/uninstall_hooks.sh        # remove the Claude/Kiro capture hooks
+bash ~/.tmux/plugins/tmux-ai-sessions-restore/scripts/uninstall_hooks.sh   # remove the Claude/Kiro capture hooks
 ```
 
 Then remove the `@plugin` line and restart tmux to drop the resurrect save hook.
