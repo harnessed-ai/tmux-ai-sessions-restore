@@ -58,11 +58,17 @@ tmux-resurrect's save file, so you need:
 curl -fsSL https://raw.githubusercontent.com/bmohan01/tmux-ai-sessions-restore/main/install.sh | bash
 ```
 
+Or if you already have the repo cloned locally:
+
+```sh
+bash ~/path/to/tmux-ai-sessions-restore/install.sh
+```
+
 Then inside tmux: **`prefix + I`**
 
-That's it. The script clones the repo and splices the `@plugin` line into `~/.tmux.conf`
-at the right slot (after resurrect, before continuum). `prefix + I` tells TPM to finish
-the install and register the Claude/Kiro hooks.
+That's it. The script clones the repo (or uses your local copy) and splices the plugin line
+into your tmux config at the right slot (after resurrect, before continuum). `prefix + I`
+tells TPM to finish the install and register the Claude/Kiro hooks.
 
 <details>
 <summary>Manual install</summary>
