@@ -5,17 +5,14 @@
 #
 # What it does:
 #   1. Clones the repo into ~/.tmux/plugins/ (skips if already present)
-#   2. Splices the @plugin line into ~/.tmux.conf at the right slot
+#   2. Splices the plugin line into your tmux config at the right slot
 #      (after tmux-resurrect, before tmux-continuum)
-#
-# After this, run  prefix + I  inside tmux to let TPM finish the install.
+#      Works with both TPM (@plugin) and direct (run-shell) config styles.
 
 set -euo pipefail
 
 REPO='https://github.com/bmohan01/tmux-ai-sessions-restore.git'
 PLUGIN_DIR="${TMUX_PLUGIN_DIR:-$HOME/.tmux/plugins}/tmux-ai-sessions-restore"
-CONF="${TMUX_CONF:-$HOME/.tmux.conf}"
-
 ok()   { echo "✓ $*"; }
 info() { echo "• $*"; }
 die()  { echo "✗ $*" >&2; exit 1; }
@@ -36,14 +33,7 @@ else
     ok "Cloned."
 fi
 
-# ── splice the @plugin line into ~/.tmux.conf ─────────────────────────────────
+# ── splice the plugin line into the tmux config ───────────────────────────────
 
-bash "$PLUGIN_DIR/scripts/install_tpm.sh"
-
-# ── done ──────────────────────────────────────────────────────────────────────
-
-echo
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  One step left: open tmux and press  prefix + I"
-echo "  TPM will install the plugin and register the hooks."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+TMUX_PLUGIN_DIR="${TMUX_PLUGIN_DIR:-$HOME/.tmux/plugins}" \
+    bash "$PLUGIN_DIR/scripts/install_tpm.sh"
