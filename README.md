@@ -28,7 +28,10 @@ reboot ─▶ resurrect/continuum restore panes + cwd ─▶ this plugin relaunc
    (`claude --resume <id>` / `kiro-cli chat --resume-id <id>`). It only rewrites a pane
    that is *actually running the tool* right now — detected via the pane's process subtree,
    so it sees through shell-integration wrappers (kiro-cli's `kiro-cli-term`, Amazon Q's
-   figterm) and still skips stale markers on panes you've since reused.
+   figterm) and still skips stale markers on panes you've since reused. If a pane is running
+   a resumed CLI but carries no marker yet (a restore hasn't been followed by a prompt), the
+   id is recovered straight from the process's own `--resume <id>` args — so an already-
+   resumed pane survives further reboots without needing you to touch it first.
 3. **Restore** — resurrect replays that command unchanged, in the pane's saved cwd.
 
 resurrect only re-runs a pane's saved command if it matches `@resurrect-processes`, so the
@@ -174,15 +177,18 @@ regenerates every cycle and never needs to survive a reboot itself.
 
 ## Limitations
 
-- A pane is only captured once you've **sent at least one prompt** in it after the hooks
-  were installed; before that (or if never captured) it cold-starts.
+- A **brand-new** session is captured once you've **sent at least one prompt** in it after
+  the hooks were installed; before that it has no transcript to resume and cold-starts.
 - Claude resume is scoped to the originating directory — if you `cd` away from where a
   session started before saving, it falls back to a cold launch.
 - Kiro's `--no-interactive` mode does not fire the prompt hook; interactive `kiro-cli chat`
   (the normal usage) does.
-- continuum saves *current reality*: if a restore fails to resume (e.g. an expired or
-  never-persisted session), the next autosave records that pane's cold state. It
-  self-heals once the AI CLI is running again (the capture hook re-stamps it).
+- After a restore, a resumed pane's marker is empty until its next prompt — but the save
+  step **recovers the session id from the resumed CLI's own `--resume <id>` arguments**, so
+  an already-resumed pane stays resumable across further reboots *even with zero interaction
+  since restore*. (Only a genuinely cold-started or never-used session lacks an id to
+  recover.) So continuum recording "current reality" no longer downgrades untouched panes.
+- Not handled: other AI CLIs, remote/SSH tmux, nested tmux.
 - Not handled: other AI CLIs, remote/SSH tmux, nested tmux.
 
 ## Troubleshooting

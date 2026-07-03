@@ -70,6 +70,48 @@ air_pane_runs_tool() {
 		}'
 }
 
+# air_pane_resume_id <tool> <root_pid> -> prints the session id parsed from the running
+# tool's *own command line* (e.g. `claude --resume <id>` / `kiro-cli chat --resume-id <id>`).
+#
+# This is the fallback that keeps a restored pane resumable even with zero interaction since
+# restore: right after a restore the capture hook hasn't re-fired, so the pane carries no
+# @ai_session_id marker — but the AI CLI it relaunched still holds the id in its own argv.
+# We walk the pane's process subtree (same as air_pane_runs_tool, to see through wrappers),
+# find the tool process, and read the token after its resume flag. Prints nothing for a
+# cold-started session (no resume flag) so those are correctly left to cold-start again.
+air_pane_resume_id() {
+	local tool="$1" root="$2" flag re
+	case "$tool" in
+		claude) flag='--resume';    re='^claude$' ;;
+		kiro)   flag='--resume-id'; re='^kiro-cli$|^kiro-cli-chat$' ;;
+		*) return 1 ;;
+	esac
+	[ -n "$root" ] || return 1
+	ps -Ao pid=,ppid=,command= 2>/dev/null | awk -v root="$root" -v flag="$flag" -v re="$re" '
+		{
+			pid=$1; ppid=$2
+			line=""; for (i=3;i<=NF;i++) line = line (i>3 ? " " : "") $i
+			P[pid]=ppid; L[pid]=line; ID[NR]=pid; n=NR
+		}
+		END {
+			d[root]=1; ch=1
+			while (ch) { ch=0
+				for (i=1;i<=n;i++) { x=ID[i]; if (!(x in d) && (P[x] in d)) { d[x]=1; ch=1 } }
+			}
+			for (i=1;i<=n;i++) {
+				x=ID[i]; if (!(x in d)) continue
+				line=L[x]
+				a0=line; sub(/[ \t].*/, "", a0); sub(/.*\//, "", a0)   # argv[0] basename
+				if (a0 !~ re) continue
+				m=split(line, T, /[ \t]+/)
+				for (j=1;j<=m;j++) {
+					if (T[j]==flag && j<m)        { print T[j+1]; exit }   # --flag <id>
+					if (index(T[j], flag "=")==1) { s=T[j]; sub(/^[^=]*=/, "", s); print s; exit }  # --flag=<id>
+				}
+			}
+		}'
+}
+
 # air_build_resume <tool> <session_id> <original_command> -> prints the command to put
 # back into the pane on restore. It preserves the user's original launch command (so flags
 # like --dangerously-skip-permissions survive) and just appends the resume flag, then a

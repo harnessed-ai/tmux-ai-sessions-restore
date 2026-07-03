@@ -41,13 +41,31 @@ fi
 map="$(mktemp "${TMPDIR:-/tmp}/air_map.XXXXXX")" || exit 0
 trap 'rm -f "$map"' EXIT
 
-tmux list-panes -a -F '#{session_name}	#{window_index}	#{pane_index}	#{@ai_tool}	#{@ai_session_id}	#{pane_pid}' 2>/dev/null \
-| while IFS=$'\t' read -r s w p tool id ppid; do
-	[ -n "$id" ] || continue
-	air_tool_enabled "$tool" || continue
-	# Skip stale markers: only rewrite if the tool is actually running in this pane's
-	# process subtree (sees through shell-integration wrappers like kiro-cli-term).
-	air_pane_runs_tool "$tool" "$ppid" || continue
+enabled="$(air_tmux_get '@ai-restore-enabled-tools' 'claude kiro')"
+
+# Field order matters: @ai_tool/@ai_session_id are the only fields that can be empty (an
+# un-restamped pane after a restore), and IFS=tab collapses consecutive empty fields. Keep
+# them LAST so their emptiness just trails off instead of shifting pane_pid out of place.
+tmux list-panes -a -F '#{pane_pid}	#{session_name}	#{window_index}	#{pane_index}	#{@ai_tool}	#{@ai_session_id}' 2>/dev/null \
+| while IFS=$'\t' read -r ppid s w p tool id; do
+	# Primary path: pane carries a live marker (stamped by capture_session.sh on a prompt)
+	# and the tool is actually running in its subtree (guards stale markers; sees through
+	# shell-integration wrappers like kiro-cli-term).
+	if [ -n "$id" ] && air_tool_enabled "$tool" && air_pane_runs_tool "$tool" "$ppid"; then
+		: # use tool + id from the marker
+	else
+		# Fallback: a restored pane that hasn't been re-stamped since restore has no marker
+		# (@ai_tool and @ai_session_id both empty), but the AI CLI it relaunched still holds
+		# `--resume <id>` in its own args. Detect the tool from the subtree and recover the
+		# id, so the pane stays resumable across reboots with zero interaction since restore.
+		tool=""; id=""
+		for t in $enabled; do
+			air_pane_runs_tool "$t" "$ppid" || continue
+			id="$(air_pane_resume_id "$t" "$ppid")"
+			[ -n "$id" ] && { tool="$t"; break; }
+		done
+		[ -n "$id" ] || continue
+	fi
 	# The command resurrect already saved for this pane (field 11, minus the leading ':'),
 	# so we can preserve the user's flags and just append the resume flag.
 	orig="$(awk -F'\t' -v s="$s" -v w="$w" -v p="$p" \
