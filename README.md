@@ -18,35 +18,21 @@ reboot ─▶ resurrect/continuum restore panes + cwd ─▶ this plugin relaunc
 ## How it works
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor You
-    participant CLI as claude / kiro-cli
-    participant Hook as capture_session.sh
-    participant Pane as tmux pane-options
-    participant Save as rewrite_save.sh
-    participant File as resurrect save file
-
-    rect rgb(240, 246, 252)
-    note right of You: Capture (live session)
-    You->>CLI: first prompt
-    CLI->>Hook: UserPromptSubmit (session_id, cwd)
-    Hook->>Pane: stamp @ai_session_id / @ai_tool / @ai_session_cwd
-    note over Pane: ephemeral — tmux server memory
+flowchart TD
+    subgraph cap["1 · Capture — live session"]
+        direction TB
+        a1["You send your first prompt<br/>in claude / kiro-cli"] --> a2["the tool's hook fires:<br/>capture_session.sh"]
+        a2 --> a3["stamp pane-options onto the pane:<br/>@ai_session_id · @ai_tool · @ai_session_cwd<br/><i>ephemeral — tmux server memory</i>"]
     end
-
-    rect rgb(240, 253, 244)
-    note right of You: Save (continuum, or prefix + Ctrl-s)
-    Save->>Pane: read markers, verify tool runs in pane subtree
-    Save->>File: rewrite field 11 to claude --resume {id}
-    note over File: durable — the only thing we persist
+    subgraph sav["2 · Save — continuum, or prefix + Ctrl-s"]
+        direction TB
+        b1["rewrite_save.sh reads the markers &<br/>verifies the tool runs in the pane subtree"] --> b2["rewrites field 11 of resurrect's save file<br/>to: claude --resume {id}<br/><i>durable — the only thing we persist</i>"]
     end
-
-    rect rgb(253, 245, 240)
-    note right of You: Restore (reboot → continuum, or prefix + Ctrl-r)
-    File->>CLI: replay saved command in the pane's cwd
-    CLI-->>You: back in the same conversation
+    subgraph res["3 · Restore — reboot then continuum, or prefix + Ctrl-r"]
+        direction TB
+        c1["resurrect replays the saved command<br/>in the pane's cwd"] --> c2["you're back in the same conversation"]
     end
+    cap --> sav --> res
 ```
 
 1. **Capture** — each tool's own first-prompt hook (Claude `UserPromptSubmit`, Kiro
