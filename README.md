@@ -17,6 +17,38 @@ reboot ─▶ resurrect/continuum restore panes + cwd ─▶ this plugin relaunc
 
 ## How it works
 
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant CLI as claude / kiro-cli
+    participant Hook as capture_session.sh
+    participant Pane as tmux pane-options
+    participant Save as rewrite_save.sh
+    participant File as resurrect save file
+
+    rect rgb(240, 246, 252)
+    note right of You: Capture (live session)
+    You->>CLI: first prompt
+    CLI->>Hook: UserPromptSubmit (session_id, cwd)
+    Hook->>Pane: stamp @ai_session_id / @ai_tool / @ai_session_cwd
+    note over Pane: ephemeral — tmux server memory
+    end
+
+    rect rgb(240, 253, 244)
+    note right of You: Save (continuum, or prefix + Ctrl-s)
+    Save->>Pane: read markers, verify tool runs in pane subtree
+    Save->>File: rewrite field 11 to claude --resume {id}
+    note over File: durable — the only thing we persist
+    end
+
+    rect rgb(253, 245, 240)
+    note right of You: Restore (reboot → continuum, or prefix + Ctrl-r)
+    File->>CLI: replay saved command in the pane's cwd
+    CLI-->>You: back in the same conversation
+    end
+```
+
 1. **Capture** — each tool's own first-prompt hook (Claude `UserPromptSubmit`, Kiro
    `userPromptSubmit`) runs *inside the pane*, so it knows `$TMUX_PANE`. It stamps the live
    session id onto that pane as tmux pane-options (`@ai_session_id`, `@ai_tool`). Capturing
@@ -40,6 +72,23 @@ Without it, restore brings back your layout but every AI pane is just a bare she
 
 Because the id is stamped per-pane, this is correct even with **many AI panes in the same
 directory** — where "resume the latest conversation" would collapse them all onto one.
+
+### How the save step decides (per pane)
+
+The save hook walks every live pane and picks one of three outcomes. The fallback branch is
+what keeps an already-resumed pane resumable across *further* reboots with zero interaction:
+
+```mermaid
+flowchart TD
+    start["For each live pane<br/>(tmux list-panes -a)"] --> q1{"pane carries a marker?<br/>@ai_session_id set"}
+    q1 -->|yes| q2{"tool actually running<br/>in the pane's subtree?"}
+    q1 -->|"no (e.g. just restored,<br/>not re-prompted yet)"| q3{"a resumed CLI in the subtree<br/>with --resume &lt;id&gt; in its args?"}
+    q2 -->|yes| build["build resume command<br/>(preserve the user's original flags)"]
+    q2 -->|"no (stale marker —<br/>pane reused for an editor)"| skip["skip pane"]
+    q3 -->|"yes → recover id from argv"| build
+    q3 -->|"no (cold-started /<br/>never used)"| skip
+    build --> write["rewrite field 11 of the pane's line<br/>in resurrect's save file"]
+```
 
 ## Requirements
 
@@ -166,6 +215,26 @@ tmux                     # continuum auto-restores, or: prefix + Ctrl-r
 The AI pane should reopen already in your prior conversation.
 
 ## Why this rides resurrect's storage
+
+```mermaid
+flowchart TB
+    subgraph cfg["Config · disk · written once at install"]
+        c1["~/.claude/settings.json<br/>UserPromptSubmit hook"]
+        c2["~/.kiro/agents/&lt;default&gt;.json<br/>userPromptSubmit hook"]
+    end
+    subgraph eph["Ephemeral · tmux server memory · gone when the pane closes"]
+        e1["pane-options:<br/>@ai_session_id<br/>@ai_tool<br/>@ai_session_cwd"]
+    end
+    subgraph dur["Durable · disk · the ONLY thing we persist"]
+        d1["resurrect save file 'last'<br/>field 11 = restore command<br/>claude --resume &lt;id&gt;"]
+    end
+    subgraph ext["The AI tool's own storage · not ours"]
+        x1["conversation transcript,<br/>keyed by session id"]
+    end
+    cfg -->|"hook fires on first prompt,<br/>stamps the pane"| eph
+    eph -->|"save step reads markers,<br/>rewrites the command"| dur
+    dur -->|"restore replays the command;<br/>the CLI loads the transcript"| ext
+```
 
 The plugin adds **no storage of its own**. During a session the mapping lives only as
 ephemeral tmux pane-options (in the server's memory, gone when the pane closes). The only
