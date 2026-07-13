@@ -10,6 +10,8 @@ windows, panes and working directories. But an AI CLI running in a pane comes ba
 
 Supports **Claude Code** (`claude`) and **Kiro CLI** (`kiro-cli chat`).
 
+![tmux-ai-sessions-restore demo](./demo.gif)
+
 ```
 reboot ─▶ resurrect/continuum restore panes + cwd ─▶ this plugin relaunches each
           AI pane as `--resume <id>` ─▶ you're back in the same conversation
