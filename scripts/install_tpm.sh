@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-PLUGIN='bmohan01/tmux-ai-sessions-restore'
+PLUGIN='harnessed-ai/tmux-ai-sessions-restore'
 PLUGIN_DIR="${TMUX_PLUGIN_DIR:-$HOME/.tmux/plugins}/tmux-ai-sessions-restore"
 
 die()  { echo "✗ $*" >&2; exit 1; }

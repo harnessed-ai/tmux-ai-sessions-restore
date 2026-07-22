@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — bootstrap tmux-ai-sessions-restore in one command:
 #
-#   curl -fsSL https://raw.githubusercontent.com/bmohan01/tmux-ai-sessions-restore/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/harnessed-ai/tmux-ai-sessions-restore/main/install.sh | bash
 #
 # What it does:
 #   1. Clones the repo into ~/.tmux/plugins/ (skips if already present)
@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-REPO='https://github.com/bmohan01/tmux-ai-sessions-restore.git'
+REPO='https://github.com/harnessed-ai/tmux-ai-sessions-restore.git'
 PLUGIN_DIR="${TMUX_PLUGIN_DIR:-$HOME/.tmux/plugins}/tmux-ai-sessions-restore"
 ok()   { echo "✓ $*"; }
 info() { echo "• $*"; }

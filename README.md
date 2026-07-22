@@ -95,7 +95,7 @@ tmux-resurrect's save file, so you need:
 ## Install (TPM)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bmohan01/tmux-ai-sessions-restore/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/harnessed-ai/tmux-ai-sessions-restore/main/install.sh | bash
 ```
 
 Or if you already have the repo cloned locally:
@@ -131,7 +131,7 @@ otherwise restore brings back your layout with bare shells.
 ```tmux
 set -g @continuum-restore 'on'
 set -g @plugin 'tmux-plugins/tmux-resurrect'
-set -g @plugin 'bmohan01/tmux-ai-sessions-restore'
+set -g @plugin 'harnessed-ai/tmux-ai-sessions-restore'
 set -g @plugin 'tmux-plugins/tmux-continuum'
 
 run '~/.tmux/plugins/tpm/tpm'
