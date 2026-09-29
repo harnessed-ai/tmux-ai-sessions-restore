@@ -1,97 +1,76 @@
 #!/usr/bin/env bash
-# rewrite_save.sh
+# rewrite_save.sh [--explain] [save_file]
 #
-# Wired into tmux-resurrect via @resurrect-hook-post-save-all, so it runs right after
-# resurrect finishes writing its save file. For every live pane that carries an
-# @ai_session_id (stamped by capture_session.sh), it rewrites field 11 (the restored
-# command) of that pane's line so resurrect relaunches the AI CLI *resumed* on restore.
+# Wired into tmux-resurrect as @resurrect-hook-post-save-layout, which hands us the save file
+# resurrect has just written *before* it points `last` at it — so a server killed mid-save
+# can never leave `last` on a file whose AI panes haven't been rewritten yet. (Run with no
+# file — as a legacy post-save-all hook, or by hand — it rewrites the file `last` points to.)
 #
-# resurrect pane-line format (tab-separated, 11 fields):
-#   pane | session_name(2) | window_index(3) | window_active(4) | :window_flags(5) |
-#   pane_index(6) | pane_title(7) | :pane_current_path(8) | pane_active(9) |
-#   pane_command(10) | :full_command(11)
-# An empty full_command is stored as a bare ":"; restore replays any pane whose field 11
-# is not ":" (with no @resurrect-processes re-check), so filling it is sufficient.
+# It snapshots every live pane and the process table once, decides per pane which command
+# brings its AI CLI back (plan.awk), then rewrites the save file (rewrite.awk): the resume
+# command for each AI pane, the CLI's real working directory, and repairs for resurrect's
+# own save bugs. The file is replaced atomically and only if the rewrite succeeded.
+#
+# --explain prints what it would change, pane by pane, and leaves the file alone.
 
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/helpers.sh
 . "$HERE/helpers.sh"
 
+explain=0
+if [ "${1:-}" = "--explain" ]; then explain=1; shift; fi
+
 command -v tmux >/dev/null 2>&1 || exit 0
 command -v awk  >/dev/null 2>&1 || exit 0
 
-dir="$(air_resurrect_dir)"
-last="$dir/last"
-[ -e "$last" ] || exit 0
-
-# Operate on the real timestamped file that `last` points to, so the symlink stays valid.
-if [ -L "$last" ]; then
-	tgt="$(readlink "$last")"
-	case "$tgt" in
-		/*) f="$tgt" ;;
-		*)  f="$dir/$tgt" ;;
-	esac
-else
-	f="$last"
+f="${1:-}"
+if [ -z "$f" ]; then
+	dir="$(air_resurrect_dir)"
+	last="$dir/last"
+	[ -e "$last" ] || exit 0
+	# Operate on the real timestamped file that `last` points to, so the symlink stays valid.
+	if [ -L "$last" ]; then
+		tgt="$(readlink "$last")"
+		case "$tgt" in
+			/*) f="$tgt" ;;
+			*)  f="$dir/$tgt" ;;
+		esac
+	else
+		f="$last"
+	fi
 fi
 [ -f "$f" ] || exit 0
 
-# Build a map: session<TAB>window<TAB>pane<TAB>resume_command for live AI panes.
-map="$(mktemp "${TMPDIR:-/tmp}/air_map.XXXXXX")" || exit 0
-trap 'rm -f "$map"' EXIT
+work="$(mktemp -d "${TMPDIR:-/tmp}/air_save.XXXXXX")" || exit 0
+tmp=""
+trap 'rm -rf "$work"; [ -z "$tmp" ] || rm -f "$tmp"' EXIT
 
-enabled="$(air_tmux_get '@ai-restore-enabled-tools' 'claude kiro')"
+# One consistent snapshot of the panes and of the process table, instead of a ps per pane.
+tmux list-panes -a -F "$AIR_PANE_FORMAT" > "$work/panes" 2>/dev/null || exit 0
+ps -Ao pid=,ppid=,comm= > "$work/psc" 2>/dev/null
+ps -Ao pid=,command=    > "$work/psa" 2>/dev/null
 
-# Field order matters: @ai_tool/@ai_session_id are the only fields that can be empty (an
-# un-restamped pane after a restore), and IFS=tab collapses consecutive empty fields. Keep
-# them LAST so their emptiness just trails off instead of shifting pane_pid out of place.
-tmux list-panes -a -F '#{pane_pid}	#{session_name}	#{window_index}	#{pane_index}	#{@ai_tool}	#{@ai_session_id}' 2>/dev/null \
-| while IFS=$'\t' read -r ppid s w p tool id; do
-	# Primary path: pane carries a live marker (stamped by capture_session.sh on a prompt)
-	# and the tool is actually running in its subtree (guards stale markers; sees through
-	# shell-integration wrappers like kiro-cli-term).
-	if [ -n "$id" ] && air_tool_enabled "$tool" && air_pane_runs_tool "$tool" "$ppid"; then
-		: # use tool + id from the marker
-	else
-		# Fallback: a restored pane that hasn't been re-stamped since restore has no marker
-		# (@ai_tool and @ai_session_id both empty), but the AI CLI it relaunched still holds
-		# `--resume <id>` in its own args. Detect the tool from the subtree and recover the
-		# id, so the pane stays resumable across reboots with zero interaction since restore.
-		tool=""; id=""
-		for t in $enabled; do
-			air_pane_runs_tool "$t" "$ppid" || continue
-			id="$(air_pane_resume_id "$t" "$ppid")"
-			[ -n "$id" ] && { tool="$t"; break; }
-		done
-		[ -n "$id" ] || continue
-	fi
-	# The command resurrect already saved for this pane (field 11, minus the leading ':'),
-	# so we can preserve the user's flags and just append the resume flag.
-	orig="$(awk -F'\t' -v s="$s" -v w="$w" -v p="$p" \
-		'$1=="pane" && $2==s && $3==w && $6==p { v=$11; sub(/^:/, "", v); print v; exit }' "$f")"
-	cmd="$(air_build_resume "$tool" "$id" "$orig")" || continue
-	[ -n "$cmd" ] || continue
-	printf '%s\t%s\t%s\t%s\n' "$s" "$w" "$p" "$cmd" >> "$map"
-done
+awk -v psc="$work/psc" -v psa="$work/psa" -v panes="$work/panes" \
+	-v enabled="$(air_tmux_get '@ai-restore-enabled-tools' 'claude kiro')" \
+	-v claude_base="$(air_tmux_get '@ai-restore-claude-command' 'claude')" \
+	-v kiro_base="$(air_tmux_get '@ai-restore-kiro-command' 'kiro-cli chat')" \
+	-v fallback="$(air_tmux_get '@ai-restore-cold-fallback' 'on')" \
+	-f "$HERE/plan.awk" "$work/psc" "$work/psa" "$work/panes" > "$work/plan" || exit 0
+air_tool_cwds "$work/plan" > "$work/cwds"
 
-# No AI panes -> leave the save file untouched.
-[ -s "$map" ] || exit 0
-
-# Rewrite field 11 for matching pane lines. tmp lives in the resurrect dir so the final
-# mv is an atomic same-filesystem rename.
-tmp="$(mktemp "$dir/.air_last.XXXXXX")" || exit 0
-if awk -F'\t' -v OFS='\t' '
-	NR==FNR { cmd[$1 SUBSEP $2 SUBSEP $3] = $4; next }
-	/^pane/ {
-		k = $2 SUBSEP $3 SUBSEP $6
-		if (k in cmd) { $11 = ":" cmd[k] }
-	}
-	{ print }
-' "$map" "$f" > "$tmp"; then
-	mv "$tmp" "$f"
-else
-	rm -f "$tmp"
+if [ "$explain" = 1 ]; then
+	echo "save file: $f"
+	awk -v plan="$work/plan" -v cwds="$work/cwds" -v explain=1 \
+		-f "$HERE/rewrite.awk" "$work/plan" "$work/cwds" "$f"
+	exit 0
 fi
 
+# tmp lives next to the save file so the final mv is an atomic same-filesystem rename.
+tmp="$(mktemp "$(dirname "$f")/.air_save.XXXXXX")" || exit 0
+if awk -v plan="$work/plan" -v cwds="$work/cwds" \
+		-f "$HERE/rewrite.awk" "$work/plan" "$work/cwds" "$f" > "$tmp" && [ -s "$tmp" ]; then
+	chmod "$(air_file_mode "$f")" "$tmp" 2>/dev/null
+	mv "$tmp" "$f" && tmp=""
+fi
 exit 0

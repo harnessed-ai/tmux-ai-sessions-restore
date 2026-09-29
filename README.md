@@ -23,12 +23,12 @@ reboot ─▶ resurrect/continuum restore panes + cwd ─▶ this plugin relaunc
 flowchart TD
     subgraph cap["1 · Capture — live session"]
         direction TB
-        a1["You send your first prompt<br/>in claude / kiro-cli"] --> a2["the tool's hook fires:<br/>capture_session.sh"]
-        a2 --> a3["stamp pane-options onto the pane:<br/>@ai_session_id · @ai_tool · @ai_session_cwd<br/><i>ephemeral — tmux server memory</i>"]
+        a1["You send a prompt<br/>in claude / kiro-cli"] --> a2["the tool's hook fires:<br/>capture_session.sh"]
+        a2 --> a3["stamp pane-options onto the pane:<br/>@ai_session_id · @ai_tool · @ai_pid · @ai_session_cwd<br/><i>ephemeral — tmux server memory</i>"]
     end
     subgraph sav["2 · Save — continuum, or prefix + Ctrl-s"]
         direction TB
-        b1["rewrite_save.sh reads the markers &<br/>verifies the tool runs in the pane subtree"] --> b2["rewrites field 11 of resurrect's save file<br/>to: claude --resume {id}<br/><i>durable — the only thing we persist</i>"]
+        b1["rewrite_save.sh snapshots panes + processes,<br/>checks each marker's CLI is still running"] --> b2["rewrites field 11 of resurrect's save file<br/>to: claude --resume {id}<br/><i>durable — the only thing we persist</i>"]
     end
     subgraph res["3 · Restore — reboot then continuum, or prefix + Ctrl-r"]
         direction TB
@@ -37,22 +37,33 @@ flowchart TD
     cap --> sav --> res
 ```
 
-1. **Capture** — each tool's own first-prompt hook (Claude `UserPromptSubmit`, Kiro
-   `userPromptSubmit`) runs *inside the pane*, so it knows `$TMUX_PANE`. It stamps the live
-   session id onto that pane as tmux pane-options (`@ai_session_id`, `@ai_tool`). Capturing
-   on the first prompt (not session start) means a pane is only marked once its session
-   actually has a transcript to resume. No change to how you launch the tools; nothing is
-   written to disk by us.
-2. **Save** — a `@resurrect-hook-post-save-all` hook reads those pane-options and rewrites
-   the matching pane's command in resurrect's own save file to a resume command
-   (`claude --resume <id>` / `kiro-cli chat --resume-id <id>`). It only rewrites a pane
-   that is *actually running the tool* right now — detected via the pane's process subtree,
-   so it sees through shell-integration wrappers (kiro-cli's `kiro-cli-term`, Amazon Q's
-   figterm) and still skips stale markers on panes you've since reused. If a pane is running
-   a resumed CLI but carries no marker yet (a restore hasn't been followed by a prompt), the
-   id is recovered straight from the process's own `--resume <id>` args — so an already-
-   resumed pane survives further reboots without needing you to touch it first.
-3. **Restore** — resurrect replays that command unchanged, in the pane's saved cwd.
+1. **Capture** — each tool's own prompt hook (Claude `UserPromptSubmit`, Kiro
+   `userPromptSubmit`) runs *inside the pane*, so it knows `$TMUX_PANE`. On every prompt it
+   stamps the live session id onto that pane as tmux pane-options (`@ai_session_id`,
+   `@ai_tool`), plus `@ai_pid` — the pid of the CLI process that fired the hook. Capturing on
+   a prompt (not session start) means a pane is only marked once its session actually has a
+   transcript to resume, and after `/clear` or `/resume` the next prompt re-marks the pane
+   with the new conversation. One-shot runs inside the pane (`claude -p`, `--bg`) are
+   ignored. No change to how you launch the tools; nothing is written to disk by us.
+2. **Save** — a `@resurrect-hook-post-save-layout` hook takes one snapshot of the panes and
+   the process table and, for every pane with an AI CLI anywhere in its process subtree
+   (so it sees through shell-integration wrappers like kiro-cli's `kiro-cli-term` or Amazon
+   Q's figterm), rewrites that pane's command in resurrect's own save file to a resume
+   command (`claude --resume <id>` / `kiro-cli chat --resume-id <id>`):
+   - The id is the pane's marker **if the CLI that stamped it is still running there**. A
+     marker left by a CLI that has since exited is ignored.
+   - Otherwise it is the id on the running CLI's own command line — a restored pane you
+     haven't typed in since still carries `--resume <id>`, so it survives further reboots.
+   - The command is rebuilt from the running CLI's own arguments: your flags
+     (`--dangerously-skip-permissions`, `--model …`) are kept, any old `--resume <id>` is
+     replaced, and a first prompt given as an argument (`claude "fix the bug"`) is dropped
+     rather than sent again. With no id, the pane is relaunched the way it runs now.
+   - The pane is restored in the CLI's own working directory, which is where its
+     conversation belongs (tmux reports a wrapper's directory instead).
+
+   post-save-layout runs *before* resurrect points `last` at the new file, so killing the
+   server mid-save can never leave `last` on a file that hasn't been rewritten.
+3. **Restore** — resurrect replays that command unchanged, in that directory.
 
 resurrect only re-runs a pane's saved command if it matches `@resurrect-processes`, so the
 plugin also appends a relaxed match (`~claude`, `~kiro-cli`) to that option on load.
@@ -63,20 +74,29 @@ directory** — where "resume the latest conversation" would collapse them all o
 
 ### How the save step decides (per pane)
 
-The save hook walks every live pane and picks one of three outcomes. The fallback branch is
-what keeps an already-resumed pane resumable across *further* reboots with zero interaction:
+The save hook walks every live pane and picks one of these outcomes. The argv branch is what
+keeps an already-resumed pane resumable across *further* reboots with zero interaction; the
+liveness check is what keeps a pane from coming back as an *older* conversation:
 
 ```mermaid
 flowchart TD
-    start["For each live pane<br/>(tmux list-panes -a)"] --> q1{"pane carries a marker?<br/>@ai_session_id set"}
-    q1 -->|yes| q2{"tool actually running<br/>in the pane's subtree?"}
-    q1 -->|"no (e.g. just restored,<br/>not re-prompted yet)"| q3{"a resumed CLI in the subtree<br/>with --resume &lt;id&gt; in its args?"}
-    q2 -->|yes| build["build resume command<br/>(preserve the user's original flags)"]
-    q2 -->|"no (stale marker —<br/>pane reused for an editor)"| skip["skip pane"]
-    q3 -->|"yes → recover id from argv"| build
-    q3 -->|"no (cold-started /<br/>never used)"| skip
-    build --> write["rewrite field 11 of the pane's line<br/>in resurrect's save file"]
+    start["For each live pane<br/>(one tmux + ps snapshot)"] --> q0{"an AI CLI running<br/>in the pane's subtree?"}
+    q0 -->|"no (shell, editor, …)"| skip["leave the pane alone"]
+    q0 -->|yes| q1{"marker whose @ai_pid<br/>is that running CLI?"}
+    q1 -->|yes| build["resume that id"]
+    q1 -->|"no (none yet, or left by<br/>a CLI that has exited)"| q3{"--resume &lt;id&gt; on the<br/>CLI's command line?"}
+    q3 -->|"yes (restored, not re-prompted)"| build
+    q3 -->|no| cold["relaunch as it runs now<br/>(no id: cold start)"]
+    build --> write["rewrite the pane's line in resurrect's save file:<br/>command from the CLI's own args, CLI's own cwd"]
+    cold --> write
 ```
+
+The same pass also undoes two tmux-resurrect save bugs that otherwise start the wrong thing
+on restore: a pane with an empty title (Claude clears it on exit) gets its fields shifted by
+one — restoring it in the wrong directory with some unrelated process's command — and
+resurrect's ppid lookup can attach other panes' commands (including `claude --resume …`) to a
+pane. Shifted lines are repaired, stray lines dropped, and an AI command recorded for a pane
+that runs no AI CLI is cleared.
 
 ## Requirements
 
@@ -170,8 +190,8 @@ bash "$DIR/scripts/uninstall_hooks.sh"   # remove them anytime
 | Option | Default | Description |
 | --- | --- | --- |
 | `@ai-restore-enabled-tools` | `claude kiro` | Which tools to restore. |
-| `@ai-restore-claude-command` | `claude` | Launch command for Claude. |
-| `@ai-restore-kiro-command` | `kiro-cli chat` | Launch command for Kiro. |
+| `@ai-restore-claude-command` | `claude` | Launch command for Claude, used when the running CLI's own command line can't be read. |
+| `@ai-restore-kiro-command` | `kiro-cli chat` | Launch command for Kiro, likewise. |
 | `@ai-restore-cold-fallback` | `on` | Append `\|\| <cold launch>` so an expired/invalid id starts a normal session instead of erroring. |
 | `@ai-restore-auto-install` | `on` | Auto-register capture hooks on plugin load. |
 
@@ -202,6 +222,15 @@ tmux                     # continuum auto-restores, or: prefix + Ctrl-r
 
 The AI pane should reopen already in your prior conversation.
 
+To check a long-running workspace without touching anything, run the read-only diagnostic
+from inside tmux. It reports the hook wiring, whether continuum is really auto-saving in this
+server, how old the save a restore would use is, and pane by pane what that save would bring
+back versus what a save now would write:
+
+```sh
+bash ~/.config/tmux/plugins/tmux-ai-sessions-restore/scripts/diagnose.sh   # or ~/.tmux/plugins/…
+```
+
 ## Why this rides resurrect's storage
 
 ```mermaid
@@ -211,7 +240,7 @@ flowchart TB
         c2["~/.kiro/agents/&lt;default&gt;.json<br/>userPromptSubmit hook"]
     end
     subgraph eph["Ephemeral · tmux server memory · gone when the pane closes"]
-        e1["pane-options:<br/>@ai_session_id<br/>@ai_tool<br/>@ai_session_cwd"]
+        e1["pane-options:<br/>@ai_session_id<br/>@ai_tool<br/>@ai_pid<br/>@ai_session_cwd"]
     end
     subgraph dur["Durable · disk · the ONLY thing we persist"]
         d1["resurrect save file 'last'<br/>field 11 = restore command<br/>claude --resume &lt;id&gt;"]
@@ -219,7 +248,7 @@ flowchart TB
     subgraph ext["The AI tool's own storage · not ours"]
         x1["conversation transcript,<br/>keyed by session id"]
     end
-    cfg -->|"hook fires on first prompt,<br/>stamps the pane"| eph
+    cfg -->|"hook fires on each prompt,<br/>stamps the pane"| eph
     eph -->|"save step reads markers,<br/>rewrites the command"| dur
     dur -->|"restore replays the command;<br/>the CLI loads the transcript"| ext
 ```
@@ -236,8 +265,10 @@ regenerates every cycle and never needs to survive a reboot itself.
 
 - A **brand-new** session is captured once you've **sent at least one prompt** in it after
   the hooks were installed; before that it has no transcript to resume and cold-starts.
-- Claude resume is scoped to the originating directory — if you `cd` away from where a
-  session started before saving, it falls back to a cold launch.
+- Switching conversations inside a running CLI (`/clear`, `/resume`) is picked up on the
+  **next prompt** there; a save taken before that still names the previous conversation.
+- Arguments are recovered from `ps`, which loses quoting: an option value containing spaces
+  (`--append-system-prompt "be terse"`) is not restored intact (resurrect has the same limit).
 - Kiro's `--no-interactive` mode does not fire the prompt hook; interactive `kiro-cli chat`
   (the normal usage) does.
 - After a restore, a resumed pane's marker is empty until its next prompt — but the save
@@ -245,7 +276,6 @@ regenerates every cycle and never needs to survive a reboot itself.
   an already-resumed pane stays resumable across further reboots *even with zero interaction
   since restore*. (Only a genuinely cold-started or never-used session lacks an id to
   recover.) So continuum recording "current reality" no longer downgrades untouched panes.
-- Not handled: other AI CLIs, remote/SSH tmux, nested tmux.
 - Not handled: other AI CLIs, remote/SSH tmux, nested tmux.
 
 ## Troubleshooting
@@ -268,6 +298,29 @@ Verify with: `tmux run-shell 'command -v tmux'` — it must print a path, not no
 `*-term` pty). The plugin detects the assistant via the pane's process *subtree*, so this
 works — but if you see panes that should be assistants restore cold, confirm the assistant
 is a descendant of the tmux pane's process (`#{pane_pid}`), not a detached terminal.
+
+**A restore brings back an old layout / old conversations everywhere.** Check that
+continuum is actually saving: `scripts/diagnose.sh` warns if it isn't. continuum only turns
+auto-save on when it sees no *other* tmux server while this one starts — several terminal
+windows or tabs each launching tmux at login can trip that check — and then it stays off
+for the whole life of that server, so `last` keeps pointing at whatever an earlier server
+saved. Restart tmux from a single terminal, or save by hand (`prefix + Ctrl-s`) before
+killing the server.
+
+## Tests
+
+```sh
+bash tests/plan_test.sh        # per-pane decisions (stubbed ps / tmux input)
+bash tests/rewrite_test.sh     # save-file rewrite + resurrect bug repairs
+bash tests/entrypoint_test.sh  # hook wiring and migration (private tmux server)
+bash tests/roundtrip_test.sh   # rewrite_save.sh on real panes (private tmux server)
+bash tests/adversarial_restore_test.sh   # full save → kill-server → restore, twice
+```
+
+The adversarial test drives 40 panes through the real tmux-resurrect save/restore with fake
+`claude` / `kiro-cli` binaries (it needs a C compiler and tmux-resurrect). Every test uses
+its own `tmux -L` server and scratch directories — but don't restart your real tmux server
+while one runs, or continuum will see the test server and leave auto-save off.
 
 ## Uninstall
 

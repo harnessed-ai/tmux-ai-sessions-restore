@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared helpers for tmux-ai-sessions-restore.
-# Sourced by rewrite_save.sh and the install/uninstall scripts.
+# Sourced by rewrite_save.sh, capture_session.sh and the install/uninstall scripts.
 
 # Substring marker embedded in every command we install into a tool's hook config,
 # so install/uninstall stay idempotent and reversible.
@@ -43,110 +43,41 @@ air_tool_enabled() {
 	esac
 }
 
-# air_pane_runs_tool <tool> <pane_pid> -> 0 if the tool is running anywhere in the pane's
-# process subtree. We check the subtree (not #{pane_current_command}) so it sees through
-# shell-integration pty wrappers — e.g. kiro-cli's "kiro-cli-term" / Amazon Q's figterm —
-# which sit in front of your shell and otherwise mask the real program from tmux. This also
-# guards against stale markers: a pane reused for an editor has no assistant in its subtree.
-air_pane_runs_tool() {
-	local tool="$1" root="$2" re
-	case "$tool" in
-		claude) re='^claude$' ;;
-		# match the chat binary, not the "kiro-cli-term" shell wrapper
-		kiro)   re='^kiro-cli$|^kiro-cli-chat$' ;;
+# air_tool_regex <tool> -> the process-name pattern (matched against comm and argv[0]
+# basenames) that identifies the tool's CLI process. kiro deliberately does not match its
+# "kiro-cli-term" shell-integration pty wrapper.
+air_tool_regex() {
+	case "$1" in
+		claude) printf '%s' '^claude$' ;;
+		kiro)   printf '%s' '^kiro-cli(-chat)?$' ;;
 		*) return 1 ;;
 	esac
-	[ -n "$root" ] || return 1
-	ps -Ao pid=,ppid=,comm= 2>/dev/null | awk -v root="$root" -v re="$re" '
-		{ pid=$1; ppid=$2; comm=$3; sub(/.*\//, "", comm)
-		  P[pid]=ppid; C[pid]=comm; ID[NR]=pid; n=NR }
-		END {
-			d[root]=1; ch=1
-			while (ch) { ch=0
-				for (i=1;i<=n;i++) { x=ID[i]; if (!(x in d) && (P[x] in d)) { d[x]=1; ch=1 } }
-			}
-			for (i=1;i<=n;i++) { x=ID[i]; if ((x in d) && C[x] ~ re) found=1 }
-			exit (found ? 0 : 1)
-		}'
 }
 
-# air_pane_resume_id <tool> <root_pid> -> prints the session id parsed from the running
-# tool's *own command line* (e.g. `claude --resume <id>` / `kiro-cli chat --resume-id <id>`).
-#
-# This is the fallback that keeps a restored pane resumable even with zero interaction since
-# restore: right after a restore the capture hook hasn't re-fired, so the pane carries no
-# @ai_session_id marker — but the AI CLI it relaunched still holds the id in its own argv.
-# We walk the pane's process subtree (same as air_pane_runs_tool, to see through wrappers),
-# find the tool process, and read the token after its resume flag. Prints nothing for a
-# cold-started session (no resume flag) so those are correctly left to cold-start again.
-air_pane_resume_id() {
-	local tool="$1" root="$2" flag re
-	case "$tool" in
-		claude) flag='--resume';    re='^claude$' ;;
-		kiro)   flag='--resume-id'; re='^kiro-cli$|^kiro-cli-chat$' ;;
-		*) return 1 ;;
-	esac
-	[ -n "$root" ] || return 1
-	ps -Ao pid=,ppid=,command= 2>/dev/null | awk -v root="$root" -v flag="$flag" -v re="$re" '
-		{
-			pid=$1; ppid=$2
-			line=""; for (i=3;i<=NF;i++) line = line (i>3 ? " " : "") $i
-			P[pid]=ppid; L[pid]=line; ID[NR]=pid; n=NR
-		}
-		END {
-			d[root]=1; ch=1
-			while (ch) { ch=0
-				for (i=1;i<=n;i++) { x=ID[i]; if (!(x in d) && (P[x] in d)) { d[x]=1; ch=1 } }
-			}
-			for (i=1;i<=n;i++) {
-				x=ID[i]; if (!(x in d)) continue
-				line=L[x]
-				a0=line; sub(/[ \t].*/, "", a0); sub(/.*\//, "", a0)   # argv[0] basename
-				if (a0 !~ re) continue
-				m=split(line, T, /[ \t]+/)
-				for (j=1;j<=m;j++) {
-					if (T[j]==flag && j<m)        { print T[j+1]; exit }   # --flag <id>
-					if (index(T[j], flag "=")==1) { s=T[j]; sub(/^[^=]*=/, "", s); print s; exit }  # --flag=<id>
-				}
-			}
-		}'
+# The per-pane snapshot rewrite_save.sh plans from (tab-separated, read by plan.awk).
+# awk splits on a literal tab without collapsing empty fields, so the order is free.
+AIR_PANE_FORMAT="$(printf '%s\t' '#{pane_id}' '#{pane_pid}' '#{session_name}' '#{window_index}' \
+	'#{pane_index}' '#{pane_current_command}' '#{pane_current_path}' '#{@ai_tool}' \
+	'#{@ai_session_id}')#{@ai_pid}"
+
+# air_tool_cwds <plan-file> -> "pid<TAB>cwd" for every AI process the plan names (column 8).
+# The CLI's own cwd is where its conversation belongs; tmux's #{pane_current_path} can be
+# elsewhere (a pty wrapper such as kiro-cli-term keeps reporting where the pane started).
+air_tool_cwds() {
+	local pids pid d
+	pids="$(awk -F'\t' '$8 != "" { print $8 }' "$1" | sort -u | paste -sd, -)"
+	[ -n "$pids" ] || return 0
+	if [ -e "/proc/$$/cwd" ]; then
+		for pid in ${pids//,/ }; do
+			d="$(readlink "/proc/$pid/cwd" 2>/dev/null)" && printf '%s\t%s\n' "$pid" "$d"
+		done
+	elif command -v lsof >/dev/null 2>&1; then
+		lsof -a -d cwd -p "$pids" -Fpn 2>/dev/null |
+			awk '/^p/ { pid = substr($0, 2) } /^n/ { printf "%s\t%s\n", pid, substr($0, 2) }'
+	fi
 }
 
-# air_build_resume <tool> <session_id> <original_command> -> prints the command to put
-# back into the pane on restore. It preserves the user's original launch command (so flags
-# like --dangerously-skip-permissions survive) and just appends the resume flag, then a
-# cold-launch fallback (unless @ai-restore-cold-fallback is off) so an expired/invalid id
-# degrades to a normal start. If <original_command> is empty (resurrect saved nothing),
-# the configured launcher is used as the base.
-air_build_resume() {
-	local tool="$1" id="$2" orig="$3" fallback flag base needle cmd
-	fallback="$(air_tmux_get '@ai-restore-cold-fallback' 'on')"
-	case "$tool" in
-		claude)
-			flag='--resume'
-			base="$(air_tmux_get '@ai-restore-claude-command' 'claude')"
-			;;
-		kiro)
-			flag='--resume-id'
-			base="$(air_tmux_get '@ai-restore-kiro-command' 'kiro-cli chat')"
-			;;
-		*)
-			return 1
-			;;
-	esac
-	# Build on the saved launch command only if it actually looks like this tool (so the
-	# user's flags survive). Otherwise — empty, or a shell that resurrect happened to
-	# record for the pane — fall back to the configured launcher.
-	needle="${base%% *}"
-	case "$orig" in
-		*"$needle"*) : ;;
-		*) orig="$base" ;;
-	esac
-	# Already a resume command (user launched with --resume / --resume-id)? Leave it.
-	case "$orig" in
-		*--resume*) printf '%s' "$orig"; return 0 ;;
-	esac
-	cmd="$orig $flag $id"
-	[ "$fallback" = "on" ] && cmd="$cmd || $orig"
-	printf '%s' "$cmd"
+# air_file_mode <file> -> octal permission bits (so a rewritten save file keeps its mode).
+air_file_mode() {
+	stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
 }
