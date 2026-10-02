@@ -6,7 +6,7 @@
 #   psa   = `ps -Ao pid=,command=`
 #   panes = `tmux list-panes -a -F "$AIR_PANE_FORMAT"`:
 #           pane_id pane_pid session window pane cur_cmd cur_path @ai_tool @ai_session_id @ai_pid
-# Vars: enabled ("claude kiro"), claude_base, kiro_base, fallback ("on"/"off")
+# Vars: enabled ("claude kiro"), claude_base, kiro_base, fallback ("on" appends `|| <base>`; anything else, the default, does not)
 #
 # Output, one tab-separated line per pane:
 #   session window pane pane_pid cur_cmd cur_path tool tool_pid source id command first_child
@@ -22,11 +22,11 @@
 #      (Markers from before @ai_pid existed are trusted while the tool is running.)
 #   2. Otherwise the id on the running CLI's own command line (`claude --resume <id>`,
 #      `kiro-cli chat --resume-id <id>`), i.e. a restored pane nobody has typed in since.
-#   3. Otherwise no id: the pane is relaunched the way it is running now, without an id.
-# The command is always rebuilt from the running CLI's own argv — not from what resurrect
-# recorded, which is the pane's *direct child* (a shell under a pty wrapper) and, for a
-# restored pane, carries the conversation id it was restored with — so stale --resume ids
-# and first-prompt arguments are dropped and the user's flags are kept.
+#   3. Otherwise no id: the pane gets a plain cold launch of the base command.
+# The command is always just the configured base command plus the id — never the running
+# CLI's own flags. Replaying scraped argv is fragile (ps flattens it, so quoting and values
+# with spaces can't be recovered, and a value like `opus[1m]` is a glob that makes zsh abort
+# the whole line, fallback included); mode and model can be changed in the session instead.
 
 BEGIN {
     FS = "\t"; OFS = "\t"
@@ -35,19 +35,6 @@ BEGIN {
     RE["kiro"] = "^kiro-cli(-chat)?$"
     BASE["claude"] = claude_base == "" ? "claude" : claude_base
     BASE["kiro"] = kiro_base == "" ? "kiro-cli chat" : kiro_base
-    # Claude options that never take a value, and those that take several.
-    split("--allow-dangerously-skip-permissions --ax-screen-reader --bg --background --bare " \
-          "--brief --chrome --dangerously-skip-permissions --disable-slash-commands " \
-          "--exclude-dynamic-system-prompt-sections --forward-subagent-text -h --help --ide " \
-          "--include-hook-events --include-partial-messages --no-chrome " \
-          "--no-session-persistence --replay-user-messages --restricted --safe-mode " \
-          "--strict-mcp-config --tmux --verbose -v --version", L, " ")
-    for (i in L) BOOL["claude", L[i]] = 1
-    split("--add-dir --allowedTools --allowed-tools --disallowedTools --disallowed-tools " \
-          "--betas --file --mcp-config --tools", L, " ")
-    for (i in L) VARIADIC["claude", L[i]] = 1
-    split("-a --trust-all-tools --require-mcp-startup -h --help -V --version", L, " ")
-    for (i in L) BOOL["kiro", L[i]] = 1
 }
 
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
@@ -115,55 +102,10 @@ function argv_id(tool, a,    n, A, i, v, pinned) {
     return pinned
 }
 
-# q(token): shell-quote a token unless it is plainly safe. (ps flattens argv, so an argument
-# that contained spaces can't be recovered exactly — resurrect has the same limit — but a
-# quoted token can never turn into shell syntax when restore types it into the pane.)
-function q(t) {
-    if (t ~ /^[A-Za-z0-9_@%+=:,.\/-]+$/) return t
-    gsub(/'/, "'\\''", t)
-    return "'" t "'"
-}
-
-# relaunch(tool, argv, keep_continue): the running CLI's command line minus everything that
-# picks or forks a conversation (--resume/-r/--session-id/--fork-session, kiro --resume-id/
-# --resume-picker; --continue/-c and kiro -r only when keep_continue is 0) and minus
-# positional arguments — the first prompt, which already sits in the conversation and must
-# not be sent again. Options and their values are kept.
-function relaunch(tool, a, keep_continue,    n, A, i, t, out, start) {
-    n = split(a, A, " ")
-    if (n == 0) return BASE[tool]
-    if (tool == "kiro") {
-        if (A[2] != "chat") return BASE[tool]
-        out = (basename(A[1]) == "kiro-cli-chat" ? "kiro-cli" : q(A[1])) " chat"; start = 3
-    } else {
-        out = q(A[1]); start = 2
-    }
-    for (i = start; i <= n; i++) {
-        t = A[i]
-        if (t == "--") break
-        if (tool == "claude") {
-            if (t == "--resume" || t == "-r" || t == "--session-id") { if (i < n && A[i + 1] !~ /^-/) i++; continue }
-            if (t ~ /^--(resume|session-id)=/ || t == "--fork-session" || t == "-p" || t == "--print") continue
-            if (t == "-c" || t == "--continue") { if (keep_continue) out = out " " t; continue }
-        } else {
-            if (t == "--resume-id" || t == "-d" || t == "--delete-session") { if (i < n && A[i + 1] !~ /^-/) i++; continue }
-            if (t ~ /^--(resume-id|delete-session)=/) continue
-            if (t == "--resume-picker" || t == "-l" || t == "--list-sessions" || t == "--list-models" || t == "--no-interactive") continue
-            if (t == "-r" || t == "--resume") { if (keep_continue) out = out " " t; continue }
-        }
-        if (t !~ /^-/) continue                       # positional: the first prompt
-        out = out " " q(t)
-        if (t ~ /=/ || ((tool, t) in BOOL)) continue
-        if ((tool, t) in VARIADIC) { while (i < n && A[i + 1] !~ /^-/) out = out " " q(A[++i]); continue }
-        if (i < n && A[i + 1] !~ /^-/) out = out " " q(A[++i])   # the option's value
-    }
-    return out
-}
-
-function build(tool, a, id,    base) {
-    if (id == "") return relaunch(tool, a, 1)
-    base = relaunch(tool, a, 0)
-    return base " " (tool == "kiro" ? "--resume-id" : "--resume") " " id (fallback == "off" ? "" : " || " base)
+function build(tool, id,    base) {
+    base = BASE[tool]
+    if (id == "") return base
+    return base " " (tool == "kiro" ? "--resume-id" : "--resume") " " id (fallback == "on" ? " || " base : "")
 }
 
 function plan_pane(    pane_pid, mtool, mid, mpid, tool, tpid, src, id, live, i, cmd, child) {
@@ -183,7 +125,7 @@ function plan_pane(    pane_pid, mtool, mid, mpid, tool, tpid, src, id, live, i,
             break
         }
     }
-    cmd = (tool == "" ? "" : build(tool, args[tpid], id))
+    cmd = (tool == "" ? "" : build(tool, id))
     child = (pane_pid in firstkid) ? args[firstkid[pane_pid]] : ""
     gsub(/\t/, " ", child)
     print $3, $4, $5, pane_pid, $6, $7, tool, tpid, src, id, cmd, child

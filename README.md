@@ -54,10 +54,13 @@ flowchart TD
      marker left by a CLI that has since exited is ignored.
    - Otherwise it is the id on the running CLI's own command line — a restored pane you
      haven't typed in since still carries `--resume <id>`, so it survives further reboots.
-   - The command is rebuilt from the running CLI's own arguments: your flags
-     (`--dangerously-skip-permissions`, `--model …`) are kept, any old `--resume <id>` is
-     replaced, and a first prompt given as an argument (`claude "fix the bug"`) is dropped
-     rather than sent again. With no id, the pane is relaunched the way it runs now.
+   - The command is always the bare launch command plus the id —
+     `claude --resume <id>` — never the running CLI's own arguments. Flags like
+     `--dangerously-skip-permissions` or `--model …` are *not* carried over (switch mode or
+     model inside the session, or put flags you always want in `@ai-restore-claude-command`):
+     replaying scraped arguments is what can make a resume fail outright — e.g.
+     `--model opus[1m]` unquoted is a zsh glob that aborts the whole line. A first prompt
+     given as an argument is never sent again either. With no id, the pane cold-launches.
    - The pane is restored in the CLI's own working directory, which is where its
      conversation belongs (tmux reports a wrapper's directory instead).
 
@@ -86,8 +89,8 @@ flowchart TD
     q1 -->|yes| build["resume that id"]
     q1 -->|"no (none yet, or left by<br/>a CLI that has exited)"| q3{"--resume &lt;id&gt; on the<br/>CLI's command line?"}
     q3 -->|"yes (restored, not re-prompted)"| build
-    q3 -->|no| cold["relaunch as it runs now<br/>(no id: cold start)"]
-    build --> write["rewrite the pane's line in resurrect's save file:<br/>command from the CLI's own args, CLI's own cwd"]
+    q3 -->|no| cold["cold launch<br/>(no id)"]
+    build --> write["rewrite the pane's line in resurrect's save file:<br/>bare launch command (+ id), CLI's own cwd"]
     cold --> write
 ```
 
@@ -190,16 +193,16 @@ bash "$DIR/scripts/uninstall_hooks.sh"   # remove them anytime
 | Option | Default | Description |
 | --- | --- | --- |
 | `@ai-restore-enabled-tools` | `claude kiro` | Which tools to restore. |
-| `@ai-restore-claude-command` | `claude` | Launch command for Claude, used when the running CLI's own command line can't be read. |
-| `@ai-restore-kiro-command` | `kiro-cli chat` | Launch command for Kiro, likewise. |
-| `@ai-restore-cold-fallback` | `on` | Append `\|\| <cold launch>` so an expired/invalid id starts a normal session instead of erroring. |
+| `@ai-restore-claude-command` | `claude` | Launch command every restored Claude pane starts with (`<command> --resume <id>`). The running CLI's own flags are not carried over, so put any you always want here, e.g. `claude --dangerously-skip-permissions`. |
+| `@ai-restore-kiro-command` | `kiro-cli chat` | Launch command for Kiro, likewise (`<command> --resume-id <id>`). |
+| `@ai-restore-cold-fallback` | `off` | `on` appends `\|\| <cold launch>`, so an expired/invalid id starts a new, empty session instead of erroring. Off by default: a failed resume leaves Claude's error at a shell prompt rather than an empty session you might mistake for the real one. |
 | `@ai-restore-auto-install` | `on` | Auto-register capture hooks on plugin load. |
 
 Example:
 
 ```tmux
 set -g @ai-restore-enabled-tools 'claude'
-set -g @ai-restore-cold-fallback 'on'
+set -g @ai-restore-cold-fallback 'on'   # opt in to the cold-launch fallback
 ```
 
 ## Verify it works

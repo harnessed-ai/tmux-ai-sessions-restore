@@ -31,7 +31,7 @@ printf '111\t/real/cwd\n222\t/p2\n' > "$W/cwds"   # 777 unknown: keep resurrect'
   echo "/bin/zsh"
   line pane s 1 3 ':*' 3 ':/q' 1 zsh 303 ':claude --dangerously-skip-permissions'
   line pane s 1 4 ':*' 4 host ':/r' 0 zsh ':claude --resume LEAK4'
-  line pane s 2 1 ':' 1 '✳ Claude Code' ':/old' 0 zsh ':claude --resume ID5'
+  line pane s 2 1 ':' 1 '✳ Claude Code' ':/old' 0 zsh ':claude --model opus-5-5[1m] --resume ID5'
   line pane s 2 2 ':' 2 host ':/v' 0 vim ':vim notes.md'
   line pane s 2 3 ':' 3 '✳ Claude Code' ':/my\ project' 1 claude ':claude'
   line pane s 2 4 ':' 4 host ':/k' 0 less ':less /etc/hosts'
@@ -59,8 +59,11 @@ check "shifted non-AI line repaired, junk AI command gone" "$(pane 1 3)" \
     "$(line pane s 1 3 ':*' 3 ' ' ':/q' 1 zsh ':')"
 check "AI command misattributed to a non-AI pane cleared" "$(pane 1 4)" \
     "$(line pane s 1 4 ':*' 4 host ':/r' 0 zsh ':')"
-check "pane changed during the save: left as recorded" "$(pane 2 1)" \
-    "$(line pane s 2 1 ':' 1 '✳ Claude Code' ':/old' 0 zsh ':claude --resume ID5')"
+check "pane changed during the save: raw AI argv reduced to a cold launch" "$(pane 2 1)" \
+    "$(line pane s 2 1 ':' 1 '✳ Claude Code' ':/old' 0 zsh ':claude')"
+check "  ... using @ai-restore-claude-command" \
+    "$(awk -v plan="$W/plan" -v cwds="$W/cwds" -v claude_base="claude --verbose" -f "$ROOT/scripts/rewrite.awk" \
+        "$W/plan" "$W/cwds" "$W/save" | awk -F'\t' '$1=="pane" && $3==2 && $6==1 { print $11 }')" ":claude --verbose"
 check "non-AI pane untouched" "$(pane 2 2)" "$(line pane s 2 2 ':' 2 host ':/v' 0 vim ':vim notes.md')"
 check "resurrect's escaped-space dir still matches; unknown cwd kept" "$(pane 2 3)" \
     "$(line pane s 2 3 ':' 3 '✳ Claude Code' ':/my\ project' 1 claude ':claude --resume ID7 || claude')"

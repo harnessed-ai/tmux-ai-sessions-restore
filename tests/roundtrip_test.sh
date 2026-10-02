@@ -7,7 +7,7 @@
 # live layout, runs rewrite_save.sh (routed via a tmux PATH-shim) and asserts field 11:
 #   - a live marker (its @ai_pid still running in the pane) is resumed
 #   - a marker whose CLI has exited is ignored: the pane relaunches cold
-#   - the relaunch is built from the CLI's own argv (the positional "600" is dropped)
+#   - the command is the bare base command (the CLI's own argv, "600" included, is not replayed)
 #   - a stale marker on a pane no longer running the tool is ignored; non-AI panes untouched
 # and the plumbing: the file argument (post-save-layout) vs. the file `last` points to
 # (post-save-all / manual run), file mode preserved, --explain leaves the file alone.
@@ -94,11 +94,11 @@ grep -q 'session cafe-claude from prompt-hook marker' "$WORK/explain.txt"; check
 
 # post-save-layout style: resurrect passes the new file; `last` doesn't exist yet
 PATH="$SHIM:$PATH" bash "$ROOT/scripts/rewrite_save.sh" "$SAVE"
-check "live marker resumed, relaunch from the CLI's argv" "$(field11 "$SAVE" "$PA")" \
-  ":$FAKE/claude --resume cafe-claude || $FAKE/claude"
-check "marker of an exited CLI ignored: cold relaunch" "$(field11 "$SAVE" "$PC")" ":$FAKE/claude"
+check "live marker resumed with the bare base command" "$(field11 "$SAVE" "$PA")" \
+  ":claude --resume cafe-claude"
+check "marker of an exited CLI ignored: cold relaunch" "$(field11 "$SAVE" "$PC")" ":claude"
 check "kiro resumed (non-chat argv -> configured launcher)" "$(field11 "$SAVE" "$PB")" \
-  ":kiro-cli chat --resume-id beef-kiro || kiro-cli chat"
+  ":kiro-cli chat --resume-id beef-kiro"
 check "stale marker on a pane without the tool ignored" "$(field11 "$SAVE" "$SHELL_P")" ":vim"
 check "non-AI pane untouched" "$(awk -F'\t' '$6==9 {print $11}' "$SAVE")" ":vim"
 check "file mode preserved" "$(stat -f '%Lp' "$SAVE" 2>/dev/null || stat -c '%a' "$SAVE")" "644"
@@ -108,7 +108,7 @@ cp "$SAVE.orig" "$RDIR/tmux_resurrect_other.txt"
 ln -sf tmux_resurrect_other.txt "$RDIR/last"
 PATH="$SHIM:$PATH" bash "$ROOT/scripts/rewrite_save.sh"
 check "no argument: rewrites the file last points to" "$(field11 "$RDIR/tmux_resurrect_other.txt" "$PA")" \
-  ":$FAKE/claude --resume cafe-claude || $FAKE/claude"
+  ":claude --resume cafe-claude"
 [ -L "$RDIR/last" ]; check "  ... and last is still a symlink" "$?" "0"
 
 if [ "$fail" -eq 0 ]; then echo "PASS"; else echo "FAILURES"; exit 1; fi

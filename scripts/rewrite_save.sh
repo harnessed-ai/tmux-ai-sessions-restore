@@ -51,17 +51,19 @@ tmux list-panes -a -F "$AIR_PANE_FORMAT" > "$work/panes" 2>/dev/null || exit 0
 ps -Ao pid=,ppid=,comm= > "$work/psc" 2>/dev/null
 ps -Ao pid=,command=    > "$work/psa" 2>/dev/null
 
+claude_base="$(air_tmux_get '@ai-restore-claude-command' 'claude')"
+kiro_base="$(air_tmux_get '@ai-restore-kiro-command' 'kiro-cli chat')"
 awk -v psc="$work/psc" -v psa="$work/psa" -v panes="$work/panes" \
 	-v enabled="$(air_tmux_get '@ai-restore-enabled-tools' 'claude kiro')" \
-	-v claude_base="$(air_tmux_get '@ai-restore-claude-command' 'claude')" \
-	-v kiro_base="$(air_tmux_get '@ai-restore-kiro-command' 'kiro-cli chat')" \
-	-v fallback="$(air_tmux_get '@ai-restore-cold-fallback' 'on')" \
+	-v claude_base="$claude_base" -v kiro_base="$kiro_base" \
+	-v fallback="$(air_tmux_get '@ai-restore-cold-fallback' 'off')" \
 	-f "$HERE/plan.awk" "$work/psc" "$work/psa" "$work/panes" > "$work/plan" || exit 0
 air_tool_cwds "$work/plan" > "$work/cwds"
 
 if [ "$explain" = 1 ]; then
 	echo "save file: $f"
 	awk -v plan="$work/plan" -v cwds="$work/cwds" -v explain=1 \
+		-v claude_base="$claude_base" -v kiro_base="$kiro_base" \
 		-f "$HERE/rewrite.awk" "$work/plan" "$work/cwds" "$f"
 	exit 0
 fi
@@ -69,6 +71,7 @@ fi
 # tmp lives next to the save file so the final mv is an atomic same-filesystem rename.
 tmp="$(mktemp "$(dirname "$f")/.air_save.XXXXXX")" || exit 0
 if awk -v plan="$work/plan" -v cwds="$work/cwds" \
+		-v claude_base="$claude_base" -v kiro_base="$kiro_base" \
 		-f "$HERE/rewrite.awk" "$work/plan" "$work/cwds" "$f" > "$tmp" && [ -s "$tmp" ]; then
 	chmod "$(air_file_mode "$f")" "$tmp" 2>/dev/null
 	mv "$tmp" "$f" && tmp=""

@@ -13,7 +13,7 @@
 #
 # Each cycle saves with resurrect's own save.sh (which fires the plugin's hook), kills the
 # server, starts a fresh one, restores with resurrect's restore.sh, and checks what every
-# pane relaunched: which session id, in which directory, with which flags — and that no
+# pane relaunched: which session id, in which directory, without the flags it ran with — and that no
 # pane replayed a prompt or launched an AI it wasn't running. Cycle 2 runs on the restored
 # server, because panes that were *restored* behave differently from freshly launched ones.
 #
@@ -155,12 +155,15 @@ prompt_ai() { # <pane> <text>  — a prompt; waits until the capture hook stampe
     wait_until 100 has_ev "$1" prompt $((n+1)) || { setup_fail "$1" "prompt not seen"; return; }
     wait_until 100 marker_is "$1" "$(last_sid "$1")" || setup_fail "$1" "marker not stamped"
 }
-expect() { # <pane> <scenario> <tool> <mode> <id> <dir> <flags>   ('|'-separated: no IFS collapse)
+expect() { # <pane> <scenario> <tool> <mode> <id> <dir> <dropped flags>   ('|'-separated: no IFS collapse)
     printf '%s|%s|%s|%s|%s|%s|%s\n' "$(key_of "$1")" "$2" "$3" "$4" "$5" "$6" "$7" >> "$EXP.$CYCLE"
 }
 
 # ---------------------------------------------------------------- scenarios (cycle 1)
-FLAGS='--dangerously-skip-permissions --model opus'
+# restore never replays the CLI's own flags (a value like opus-5-5[1m] is a zsh glob that would
+# abort the resume line, fallback included); they must be gone from the restored command line
+FLAGS="--dangerously-skip-permissions --model 'opus-5-5[1m]'"
+FLAGS_SEEN='--dangerously-skip-permissions --model opus-5-5[1m]'
 scn_fresh_prompted()  { cdp "$1" "$2"; start_ai "$1" claude launch; prompt_ai "$1" hello
                         expect "$1" fresh_prompted claude resume "$(last_sid "$1")" "$2" ""; }
 scn_fresh_idle()      { cdp "$1" "$2"; start_ai "$1" claude launch
@@ -178,7 +181,7 @@ scn_restored_switch() { local o x; o="$(seed claude "$2")"; x="$(seed claude "$2
                         expect "$1" restored_switch claude resume "$x" "$2" ""; }
 scn_flags_restored_clear() { local o; o="$(seed claude "$2")"; cdp "$1" "$2"; start_ai "$1" "claude $FLAGS --resume $o" resume
                         send_ai "$1" /clear clear; prompt_ai "$1" "new task"
-                        expect "$1" flags_restored_clear claude resume "$(last_sid "$1")" "$2" "$FLAGS"; }
+                        expect "$1" flags_restored_clear claude resume "$(last_sid "$1")" "$2" "$FLAGS_SEEN"; }
 scn_exit_relaunch_resume() { local z; cdp "$1" "$2"; start_ai "$1" claude launch; prompt_ai "$1" first
                         send_ai "$1" /exit exit; z="$(seed claude "$2")"; start_ai "$1" "claude --resume $z" resume
                         expect "$1" exit_relaunch_resume claude resume "$z" "$2" ""; }
@@ -300,8 +303,8 @@ verify() { # compare every pane's relaunch against $EXP.$CYCLE
             ok=0
             if (mode=="resume") {
                 ok = okres && nlaunch==0 && nprompt==0 && nfail==0
-                n=split(flags, f, " "); for (i=1;i<=n;i++) if (index(" " cmdline " ", " " f[i] " ")==0) { ok=0; seen=seen " MISSING-FLAG(" f[i] ")" }
-                want="resume " short(id) "@" rel(dir) (flags!="" ? " +" flags : "")
+                n=split(flags, f, " "); for (i=1;i<=n;i++) if (index(" " cmdline " ", " " f[i] " ")!=0) { ok=0; seen=seen " KEPT-FLAG(" f[i] ")" }
+                want="resume " short(id) "@" rel(dir) (flags!="" ? " without " flags : "")
             } else if (mode=="cold") {
                 ok = nlaunch==1 && nres==0 && nfail==0 && nprompt==0
                 want="cold launch@" rel(dir)

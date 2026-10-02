@@ -62,7 +62,7 @@ cat > "$W/psa" <<EOF
  3001 claude hello there
  4000 zsh (kiro-cli-term)
  4001 /bin/zsh --login
- 4002 claude --model opus
+ 4002 claude --model opus-5-5[1m] --dangerously-skip-permissions
  5000 -zsh
  5001 claude -c --verbose
  6000 -zsh
@@ -109,7 +109,7 @@ t=$'\t'
   echo "%12${t}12000${t}s${t}3${t}4${t}node${t}/p${t}claude${t}$UB${t}12001"  # comm=node, title=claude
   echo "%13${t}13000${t}s${t}4${t}1${t}claude${t}/p${t}${t}${t}"             # --resume=<id>
   echo "%14${t}14000${t}s${t}4${t}2${t}claude${t}/p${t}${t}${t}"             # --session-id <id>
-  echo "%15${t}15000${t}s${t}4${t}3${t}claude${t}/p${t}claude${t}$UC${t}15001" # args needing quotes
+  echo "%15${t}15000${t}s${t}4${t}3${t}claude${t}/p${t}claude${t}$UC${t}15001" # shell-hostile args
   echo "%16${t}16000${t}s${t}4${t}4${t}vim${t}/p${t}${t}${t}"                # no AI
 } > "$W/panes"
 
@@ -130,17 +130,16 @@ check() {
 }
 
 check "live marker beats the restored --resume id (after /clear)" "$(col 1.1 10)" "$U2"
-check "  ... flags kept, old id dropped, cold fallback" "$(col 1.1 11)" \
-    "/Users/me/.local/bin/claude --dangerously-skip-permissions --resume $U2 || /Users/me/.local/bin/claude --dangerously-skip-permissions"
+check "  ... bare base command: flags and old id dropped, cold fallback (on)" "$(col 1.1 11)" \
+    "claude --resume $U2 || claude"
 check "marker from an exited CLI is ignored -> argv id" "$(col 1.2 9):$(col 1.2 10)" "argv:$U3"
 check "positional first prompt is never replayed" "$(col 1.3 11)" "claude --resume $U5 || claude"
 check "found through a pty wrapper (kiro-cli-term)" "$(col 1.4 8)" "4002"
-check "  ... its flags kept" "$(col 1.4 11)" "claude --model opus --resume $U6 || claude --model opus"
-check "no id: relaunched as running, -c kept" "$(col 2.1 9):$(col 2.1 11)" ":claude -c --verbose"
+check "  ... flags never replayed (opus-5-5[1m] would be a zsh glob)" "$(col 1.4 11)" "claude --resume $U6 || claude"
+check "no id: plain cold launch, no flags or -c" "$(col 2.1 9):$(col 2.1 11)" ":claude"
 check "CLI gone: pane not treated as AI" "$(col 2.2 7)$(col 2.2 11)" ""
 check "kiro: shallowest CLI, id from argv" "$(col 2.3 8):$(col 2.3 10)" "7001:kiro-abc"
-check "  ... kiro command" "$(col 2.3 11)" \
-    "kiro-cli chat --trust-all-tools --resume-id kiro-abc || kiro-cli chat --trust-all-tools"
+check "  ... kiro command" "$(col 2.3 11)" "kiro-cli chat --resume-id kiro-abc || kiro-cli chat"
 check "legacy marker (no @ai_pid) still trusted" "$(col 2.4 9):$(col 2.4 10)" "marker:$U8"
 check "hostile marker id rejected (never reaches a shell)" "$(col 3.1 10):$(col 3.1 11)" ":claude"
 check "-r <search term> is not an id, and is dropped" "$(col 3.2 10):$(col 3.2 11)" ":claude"
@@ -148,13 +147,18 @@ check "nested claude -p: the interactive CLI is the one tracked" "$(col 3.3 8):$
 check "CLI detected by argv[0] when comm differs (node)" "$(col 3.4 7):$(col 3.4 10)" "claude:$UB"
 check "--resume=<id> form" "$(col 4.1 10)" "$UC"
 check "--session-id <id>" "$(col 4.2 10)" "$UD"
-check "arguments that need it are shell-quoted" "$(col 4.3 11)" \
-    "claude --allowedTools 'Bash(git' '*)' Edit --append-system-prompt 'it'\\''s-fine' --resume $UC || claude --allowedTools 'Bash(git' '*)' Edit --append-system-prompt 'it'\\''s-fine'"
+check "shell-hostile arguments are never replayed" "$(col 4.3 11)" "claude --resume $UC || claude"
 check "no AI CLI: nothing planned" "$(col 4.4 7)$(col 4.4 11)" ""
 check "first child recorded (resurrect's intended command)" "$(col 4.4 12)" "gitstatusd-darwin-arm64 -s -1"
 
+run_plan -v fallback= > "$W/plan.nofallback"
+check "@ai-restore-cold-fallback unset: off by default" "$(col 1.3 11 "$W/plan.nofallback")" "claude --resume $U5"
 run_plan -v fallback=off > "$W/plan.nofallback"
-check "@ai-restore-cold-fallback off" "$(col 1.3 11 "$W/plan.nofallback")" "claude --resume $U5"
+check "@ai-restore-cold-fallback off" "$(col 2.3 11 "$W/plan.nofallback")" "kiro-cli chat --resume-id kiro-abc"
+
+run_plan -v claude_base="claude --dangerously-skip-permissions" > "$W/plan.base"
+check "@ai-restore-claude-command is the launch prefix" "$(col 1.4 11 "$W/plan.base")" \
+    "claude --dangerously-skip-permissions --resume $U6 || claude --dangerously-skip-permissions"
 
 awk -v psc="$W/psc" -v psa="$W/psa" -v panes="$W/panes" -v enabled="claude" \
     -f "$ROOT/scripts/plan.awk" "$W/psc" "$W/psa" "$W/panes" > "$W/plan.claudeonly"
