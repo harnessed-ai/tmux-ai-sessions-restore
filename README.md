@@ -5,11 +5,19 @@ Resume your **AI coding conversations** after a reboot — not just your tmux la
 [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) +
 [tmux-continuum](https://github.com/tmux-plugins/tmux-continuum) bring back your sessions,
 windows, panes and working directories. But an AI CLI running in a pane comes back
-**cold** — a brand-new, empty conversation. This plugin is the missing layer: it makes
-`claude` and `kiro-cli chat` relaunch **resumed**, in the same pane, where you left off.
+**cold** — a brand-new, empty conversation. This plugin is the missing layer: it makes your
+AI CLIs relaunch **resumed**, in the same pane, where you left off.
 
-Supports **Claude Code** (`claude`), **Kiro CLI** (`kiro-cli chat`), **OpenCode** (`opencode`) and
-**OpenAI Codex CLI** (`codex`).
+| CLI | Restored as | Capture hook (registered for you) | Notes |
+| --- | --- | --- | --- |
+| **Claude Code** | `claude --resume <id>` | `UserPromptSubmit` in `~/.claude/settings.json` | |
+| **Kiro CLI** | `kiro-cli chat --resume-id <id>` | `userPromptSubmit` in your default `~/.kiro/agents/*.json` | |
+| **OpenCode** | `opencode --session <id>` | plugin file in `~/.config/opencode/plugins/` | OpenCode has no shell hooks |
+| **OpenAI Codex CLI** | `codex resume <id>` | `UserPromptSubmit` in `~/.codex/hooks.json` | **trust it once in `/hooks`** |
+| **Gemini CLI** | `gemini --resume <id>` | `BeforeAgent` in `~/.gemini/settings.json` | |
+
+Adding another CLI is one row in [`scripts/tools.tsv`](scripts/tools.tsv) plus its hook
+installer — see [Adding another CLI](#adding-another-cli).
 
 ![tmux-ai-sessions-restore demo](./demo.gif)
 
@@ -38,23 +46,26 @@ flowchart TD
     cap --> sav --> res
 ```
 
-1. **Capture** — each tool's own prompt hook (Claude `UserPromptSubmit`, Kiro
-   `userPromptSubmit`) runs *inside the pane*, so it knows `$TMUX_PANE`. On every prompt it
+1. **Capture** — each tool's own prompt hook (Claude / Codex `UserPromptSubmit`, Kiro
+   `userPromptSubmit`, Gemini `BeforeAgent`, an OpenCode plugin) runs *inside the pane*, so
+   it knows `$TMUX_PANE`. On every prompt it
    stamps the live session id onto that pane as tmux pane-options (`@ai_session_id`,
    `@ai_tool`), plus `@ai_pid` — the pid of the CLI process that fired the hook. Capturing on
    a prompt (not session start) means a pane is only marked once its session actually has a
    transcript to resume, and after `/clear` or `/resume` the next prompt re-marks the pane
-   with the new conversation. One-shot runs inside the pane (`claude -p`, `--bg`) are
-   ignored. No change to how you launch the tools; nothing is written to disk by us.
+   with the new conversation. One-shot runs inside the pane (`claude -p`, `--bg`,
+   `codex exec`, `opencode run`, `gemini -p`) are ignored. No change to how you launch the tools; nothing is written to disk by us.
 2. **Save** — a `@resurrect-hook-post-save-layout` hook takes one snapshot of the panes and
    the process table and, for every pane with an AI CLI anywhere in its process subtree
    (so it sees through shell-integration wrappers like kiro-cli's `kiro-cli-term` or Amazon
    Q's figterm), rewrites that pane's command in resurrect's own save file to a resume
-   command (`claude --resume <id>` / `kiro-cli chat --resume-id <id>`):
+   command (`claude --resume <id>`, `kiro-cli chat --resume-id <id>`, …, per the table above):
    - The id is the pane's marker **if the CLI that stamped it is still running there**. A
      marker left by a CLI that has since exited is ignored.
    - Otherwise it is the id on the running CLI's own command line — a restored pane you
      haven't typed in since still carries `--resume <id>`, so it survives further reboots.
+   - A node CLI (Gemini, or Codex's npm shim) is recognised by its script name, so
+     `node …/bin/gemini` counts as `gemini`.
    - The command is always the bare launch command plus the id —
      `claude --resume <id>` — never the running CLI's own arguments. Flags like
      `--dangerously-skip-permissions` or `--model …` are *not* carried over (switch mode or
@@ -70,7 +81,8 @@ flowchart TD
 3. **Restore** — resurrect replays that command unchanged, in that directory.
 
 resurrect only re-runs a pane's saved command if it matches `@resurrect-processes`, so the
-plugin also appends a relaxed match (`~claude`, `~kiro-cli`) to that option on load.
+plugin also appends a relaxed match (`~claude`, `~kiro-cli`, `~opencode`, `~codex`,
+`~gemini`) to that option on load.
 Without it, restore brings back your layout but every AI pane is just a bare shell.
 
 Because the id is stamped per-pane, this is correct even with **many AI panes in the same
@@ -114,7 +126,7 @@ tmux-resurrect's save file, so you need:
   `prefix + Ctrl-s` / `prefix + Ctrl-r`
 - tmux ≥ 3.0 (pane-level user options)
 - `jq`
-- `claude` and/or `kiro-cli` on your `PATH`
+- at least one supported CLI on your `PATH` (`claude`, `kiro-cli`, `opencode`, `codex`, `gemini`)
 
 ## Install (TPM)
 
@@ -128,7 +140,7 @@ Or if you already have the repo cloned locally:
 bash ~/path/to/tmux-ai-sessions-restore/install.sh
 ```
 
-**TPM users** — inside tmux press **`prefix + I`** and you're done. TPM installs the plugin and registers the Claude/Kiro hooks automatically.
+**TPM users** — inside tmux press **`prefix + I`** and you're done. TPM installs the plugin and registers the capture hooks for every supported CLI you have installed. (Codex: then trust the hook once in `codex` → `/hooks`.)
 
 **Non-TPM / run-shell users** — source your config, then register the hooks manually:
 
@@ -179,6 +191,12 @@ learn a pane's session id. On first load it registers them for you (idempotent):
 - `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) — a `UserPromptSubmit` hook. **Codex
   skips a new hook until you trust it:** start `codex`, open `/hooks` and approve it once
   (again if the plugin later moves to another path). Until then Codex panes come back cold.
+- `~/.gemini/settings.json` (home is `$GEMINI_CLI_HOME` when set) — a `BeforeAgent` hook
+  (it prints `{}`, since Gemini reads a hook's stdout as JSON)
+
+A CLI that isn't installed is skipped; when a later version of the plugin adds a CLI, its
+hook is registered on the next tmux start. `bash scripts/install_hooks.sh --check` (also
+part of `scripts/diagnose.sh`) shows what is registered where.
 
 Each hook only stamps a tmux pane-option and does nothing else. To manage it yourself
 instead of letting the plugin do it:
@@ -204,6 +222,7 @@ bash "$DIR/scripts/uninstall_hooks.sh"   # remove them anytime
 | `@ai-restore-kiro-command` | `kiro-cli chat` | Launch command for Kiro, likewise (`<command> --resume-id <id>`). |
 | `@ai-restore-opencode-command` | `opencode` | Launch command for OpenCode (`<command> --session <id>`). |
 | `@ai-restore-codex-command` | `codex` | Launch command for Codex (`<command> resume <id>`). |
+| `@ai-restore-gemini-command` | `gemini` | Launch command for Gemini (`<command> --resume <id>`). |
 | `@ai-restore-cold-fallback` | `off` | `on` appends `\|\| <cold launch>`, so an expired/invalid id starts a new, empty session instead of erroring. Off by default: a failed resume leaves Claude's error at a shell prompt rather than an empty session you might mistake for the real one. |
 | `@ai-restore-auto-install` | `on` | Auto-register capture hooks on plugin load. |
 
@@ -218,14 +237,14 @@ set -g @ai-restore-cold-fallback 'on'   # opt in to the cold-launch fallback
 
 ```sh
 # 1. start an AI CLI in a pane and chat a little
-claude            # or: kiro-cli chat
+claude            # or: kiro-cli chat / opencode / codex / gemini
 
 # 2. in another pane, confirm the live session was captured onto the pane
-tmux show -p -t <that-pane> -v @ai_session_id      # prints a UUID
+tmux show -p -t <that-pane> -v @ai_session_id      # prints the session id
 
 # 3. save, then check resurrect baked in a resume command
 tmux run-shell ~/.tmux/plugins/tmux-resurrect/scripts/save.sh
-grep -- '--resume' ~/.local/share/tmux/resurrect/last    # older resurrect: ~/.tmux/resurrect/last
+grep -E -- '--resume|--session| resume ' ~/.local/share/tmux/resurrect/last    # older resurrect: ~/.tmux/resurrect/last
 
 # 4. kill the server and restore
 tmux kill-server
@@ -250,6 +269,7 @@ flowchart TB
     subgraph cfg["Config · disk · written once at install"]
         c1["~/.claude/settings.json<br/>UserPromptSubmit hook"]
         c2["~/.kiro/agents/&lt;default&gt;.json<br/>userPromptSubmit hook"]
+        c3["~/.codex/hooks.json · ~/.gemini/settings.json<br/>~/.config/opencode/plugins/…js"]
     end
     subgraph eph["Ephemeral · tmux server memory · gone when the pane closes"]
         e1["pane-options:<br/>@ai_session_id<br/>@ai_tool<br/>@ai_pid<br/>@ai_session_cwd"]
@@ -269,7 +289,7 @@ The plugin adds **no storage of its own**. During a session the mapping lives on
 ephemeral tmux pane-options (in the server's memory, gone when the pane closes). The only
 durable artifact is the resume command written into **resurrect's existing save file**
 (field 11, the per-pane "restored command"). resurrect replays it on restore *if* the
-command matches `@resurrect-processes` — which is why the plugin adds `~claude`/`~kiro-cli`
+command matches `@resurrect-processes` — which is why the plugin adds `~claude`, `~kiro-cli`, …
 to that option. After a restore the next prompt re-stamps the pane, so the mapping
 regenerates every cycle and never needs to survive a reboot itself.
 
@@ -347,14 +367,15 @@ bash tests/adversarial_restore_test.sh   # full save → kill-server → restore
 ```
 
 The adversarial test drives 40 panes through the real tmux-resurrect save/restore with fake
-`claude` / `kiro-cli` binaries (it needs a C compiler and tmux-resurrect). Every test uses
+`claude` / `kiro-cli` / `opencode` / `codex` / `gemini` binaries (Gemini through a fake `node`,
+relaunching itself like the real one; it needs a C compiler and tmux-resurrect). Every test uses
 its own `tmux -L` server and scratch directories — but don't restart your real tmux server
 while one runs, or continuum will see the test server and leave auto-save off.
 
 ## Uninstall
 
 ```sh
-# resolve wherever the plugin landed, then remove the Claude/Kiro capture hooks:
+# resolve wherever the plugin landed, then remove the capture hooks (all CLIs, or name some):
 DIR="$HOME/.tmux/plugins/tmux-ai-sessions-restore"
 [ -d "$DIR" ] || DIR="$HOME/.config/tmux/plugins/tmux-ai-sessions-restore"
 bash "$DIR/scripts/uninstall_hooks.sh"

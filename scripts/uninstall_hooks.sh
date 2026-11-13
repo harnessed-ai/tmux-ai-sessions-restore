@@ -44,6 +44,12 @@ uninstall_codex() {
 	echo "✓ Removed Codex hook from $file"
 }
 
+uninstall_gemini() {
+	local file="${GEMINI_CLI_HOME:-$HOME}/.gemini/settings.json"
+	remove_hook_groups "$file" || return 0
+	echo "✓ Removed Gemini hook from $file"
+}
+
 # Strip our capture command from every Kiro hook event (userPromptSubmit and legacy
 # agentSpawn) across all agent configs.
 uninstall_kiro() {

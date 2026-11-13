@@ -288,4 +288,43 @@ check "codex npm shim: the shallowest codex (node script) is tracked" "$(col 2.1
 check "codex npm shim: marker from the native child is live" "$(col 2.2 9 "$W/plan5"):$(col 2.2 11 "$W/plan5")" \
     "marker:codex --yolo resume thr_abc123"
 
+# gemini: a node CLI that relaunches itself as a child (the session) running dist/index.js.
+cat > "$W/psc6" <<'EOF'
+ 1000     1 -zsh
+ 1001  1000 node
+ 1002  1001 node
+ 2000     1 -zsh
+ 2001  2000 node
+ 2002  2001 node
+ 3000     1 -zsh
+ 3001  3000 node
+ 4000     1 -zsh
+ 4001  4000 node
+EOF
+cat > "$W/psa6" <<EOF
+ 1000 -zsh
+ 1001 node /opt/homebrew/bin/gemini -m gemini-3-pro
+ 1002 node --max-old-space-size=8192 /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js -m gemini-3-pro
+ 2000 -zsh
+ 2001 node /opt/homebrew/bin/gemini --resume $U3
+ 2002 node --max-old-space-size=8192 /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js --resume $U3
+ 3000 -zsh
+ 3001 node /opt/homebrew/bin/gemini -p summarize this
+ 4000 -zsh
+ 4001 node /opt/homebrew/bin/gemini -r latest
+EOF
+{
+  echo "%1${t}1000${t}g${t}1${t}1${t}node${t}/p${t}gemini${t}$U4${t}1001"
+  echo "%2${t}2000${t}g${t}1${t}2${t}node${t}/p${t}${t}${t}"
+  echo "%3${t}3000${t}g${t}1${t}3${t}node${t}/p${t}${t}${t}"
+  echo "%4${t}4000${t}g${t}1${t}4${t}node${t}/p${t}${t}${t}"
+} > "$W/panes6"
+awk -v tools="$TOOLS" -v psc="$W/psc6" -v psa="$W/psa6" -v panes="$W/panes6" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc6" "$W/psa6" "$W/panes6" > "$W/plan6"
+check "gemini (node): live marker from the CLI process, flags dropped" \
+    "$(col 1.1 8 "$W/plan6"):$(col 1.1 9 "$W/plan6"):$(col 1.1 11 "$W/plan6")" "1001:marker:gemini --resume $U4"
+check "gemini (node): --resume <uuid> read back from the launcher" "$(col 1.2 9 "$W/plan6"):$(col 1.2 10 "$W/plan6")" "argv:$U3"
+check "gemini -p is a one-shot run" "$(col 1.3 7 "$W/plan6")" ""
+check "gemini -r latest: not an id, cold launch" "$(col 1.4 10 "$W/plan6"):$(col 1.4 11 "$W/plan6")" ":gemini"
+
 if [ "$fail" -eq 0 ]; then echo "PASS"; else echo "FAILURES"; exit 1; fi

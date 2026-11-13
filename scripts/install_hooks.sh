@@ -135,6 +135,30 @@ check_codex() {
 	report codex codex "$(hook_state "$(codex_hooks_file)")" "$(codex_hooks_file)" "Codex runs it only once trusted in /hooks"
 }
 
+# Gemini reads ~/.gemini/settings.json (the home dir is $GEMINI_CLI_HOME when set). Its prompt
+# event is BeforeAgent, and it parses a hook's stdout as JSON, so the command ends with `{}`.
+gemini_settings_file() { printf '%s/.gemini/settings.json' "${GEMINI_CLI_HOME:-$HOME}"; }
+
+install_gemini() {
+	if ! command -v gemini >/dev/null 2>&1; then
+		echo "• gemini not found — skipping Gemini hook"
+		return
+	fi
+	local file; file="$(gemini_settings_file)"
+	add_hook_group "$file" BeforeAgent "bash \"$CAP\" gemini; echo '{}'"
+	echo "✓ Gemini BeforeAgent hook → $file"
+}
+
+check_gemini() {
+	local file; file="$(gemini_settings_file)"
+	if command -v gemini >/dev/null 2>&1 && [ -f "$file" ] &&
+		[ "$(jq '.hooksConfig.enabled == false' "$file" 2>/dev/null)" = true ]; then
+		printf '  WARN  %-8s hooksConfig.enabled is false in %s: Gemini runs no hooks\n' gemini "$file"
+		return
+	fi
+	report gemini gemini "$(hook_state "$file")" "$file"
+}
+
 # OpenCode loads plugin files from <config dir>/plugins/ (OPENCODE_CONFIG_DIR, when set, is
 # an extra config dir it also loads).
 opencode_plugin_file() {

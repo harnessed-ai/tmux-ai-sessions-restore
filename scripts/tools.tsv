@@ -24,3 +24,4 @@ claude	^claude$	claude	--resume {id}	--resume,-r	--session-id	uuid	claude	-p,--p
 kiro	^kiro-cli(-chat)?$	kiro-cli chat	--resume-id {id}	--resume-id	-	safe	kiro-cli	-p,--print,--bg,--background,--no-interactive
 opencode	^opencode$	opencode	--session {id}	--session,-s	-	safe	opencode	run,serve,web,acp
 codex	^codex$	codex	resume {id}	resume	-	uuid	codex	exec,e,app-server,mcp-server
+gemini	^gemini$	gemini	--resume {id}	--resume,-r	-	uuid	gemini	-p,--prompt
