@@ -113,10 +113,11 @@ t=$'\t'
   echo "%16${t}16000${t}s${t}4${t}4${t}vim${t}/p${t}${t}${t}"                # no AI
 } > "$W/panes"
 
+TOOLS="$ROOT/scripts/tools.tsv"
 run_plan() { # [extra awk -v assignments...]
-    awk -v psc="$W/psc" -v psa="$W/psa" -v panes="$W/panes" -v enabled="claude kiro" \
-        -v claude_base=claude -v kiro_base="kiro-cli chat" -v fallback=on "$@" \
-        -f "$ROOT/scripts/plan.awk" "$W/psc" "$W/psa" "$W/panes"
+    awk -v tools="$TOOLS" -v psc="$W/psc" -v psa="$W/psa" -v panes="$W/panes" -v enabled="claude kiro" \
+        -v fallback=on "$@" \
+        -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc" "$W/psa" "$W/panes"
 }
 run_plan > "$W/plan"
 
@@ -156,12 +157,174 @@ check "@ai-restore-cold-fallback unset: off by default" "$(col 1.3 11 "$W/plan.n
 run_plan -v fallback=off > "$W/plan.nofallback"
 check "@ai-restore-cold-fallback off" "$(col 2.3 11 "$W/plan.nofallback")" "kiro-cli chat --resume-id kiro-abc"
 
-run_plan -v claude_base="claude --dangerously-skip-permissions" > "$W/plan.base"
+run_plan -v bases="claude=claude --dangerously-skip-permissions" > "$W/plan.base"
 check "@ai-restore-claude-command is the launch prefix" "$(col 1.4 11 "$W/plan.base")" \
     "claude --dangerously-skip-permissions --resume $U6 || claude --dangerously-skip-permissions"
 
-awk -v psc="$W/psc" -v psa="$W/psa" -v panes="$W/panes" -v enabled="claude" \
-    -f "$ROOT/scripts/plan.awk" "$W/psc" "$W/psa" "$W/panes" > "$W/plan.claudeonly"
+awk -v tools="$TOOLS" -v psc="$W/psc" -v psa="$W/psa" -v panes="$W/panes" -v enabled="claude" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc" "$W/psa" "$W/panes" > "$W/plan.claudeonly"
 check "disabled tool is left alone" "$(col 2.3 7 "$W/plan.claudeonly")" ""
+
+# A tool known only from a table row (nothing in the scripts names it): process match by
+# comm and by node script, a subcommand-style id, a --flag=value id, and its own base.
+{ cat "$TOOLS"; printf 'zed\t^zedcli$\tzedcli --tui\tgo {id}\tgo,--sid\t-\tsafe\tzedcli\t-\n'; } > "$W/tools3"
+printf ' 1000     1 -zsh\n 1001  1000 zedcli\n 2000     1 -zsh\n 2001  2000 node\n 3000     1 -zsh\n 3001  3000 node\n' > "$W/psc3"
+printf ' 1000 -zsh\n 1001 zedcli go z-123\n 2000 -zsh\n 2001 node /opt/bin/zedcli --sid=z-9\n 3000 -zsh\n 3001 node /opt/lib/index.js go z-5\n' > "$W/psa3"
+{
+  echo "%1${t}1000${t}s${t}9${t}1${t}zedcli${t}/p${t}${t}${t}"
+  echo "%2${t}2000${t}s${t}9${t}2${t}node${t}/p${t}zed${t}z-77${t}2001"
+  echo "%3${t}3000${t}s${t}9${t}3${t}node${t}/p${t}${t}${t}"
+} > "$W/panes3"
+awk -v tools="$W/tools3" -v psc="$W/psc3" -v psa="$W/psa3" -v panes="$W/panes3" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc3" "$W/psa3" "$W/panes3" > "$W/plan3"
+check "table-only tool: subcommand id from argv" "$(col 9.1 7 "$W/plan3"):$(col 9.1 11 "$W/plan3")" "zed:zedcli --tui go z-123"
+check "table-only tool: node script matched, live marker wins" "$(col 9.2 9 "$W/plan3"):$(col 9.2 11 "$W/plan3")" "marker:zedcli --tui go z-77"
+check "table-only tool: node running another script is not it" "$(col 9.3 7 "$W/plan3")" ""
+
+# opencode, and one-shot / server runs (the oneshot column) that are not the pane's CLI.
+cat > "$W/psc4" <<'EOF'
+ 1000     1 -zsh
+ 1001  1000 opencode
+ 2000     1 -zsh
+ 2001  2000 opencode
+ 3000     1 -zsh
+ 3001  3000 opencode
+ 4000     1 -zsh
+ 4001  4000 opencode
+ 5000     1 -zsh
+ 5001  5000 opencode
+ 6000     1 -zsh
+ 6001  6000 claude
+ 7000     1 -zsh
+ 7001  7000 opencode
+ 7002  7001 opencode
+EOF
+cat > "$W/psa4" <<'EOF'
+ 1000 -zsh
+ 1001 opencode
+ 2000 -zsh
+ 2001 opencode -s ses_def --model anthropic/x
+ 3000 -zsh
+ 3001 opencode --session=ses_ghi
+ 4000 -zsh
+ 4001 opencode serve --port 4096
+ 5000 -zsh
+ 5001 opencode --prompt run tests
+ 6000 -zsh
+ 6001 claude -p summarize
+ 7000 -zsh
+ 7001 opencode -s ses_out
+ 7002 opencode run hello
+EOF
+{
+  echo "%1${t}1000${t}o${t}1${t}1${t}opencode${t}/p${t}opencode${t}ses_abc${t}1001"
+  echo "%2${t}2000${t}o${t}1${t}2${t}opencode${t}/p${t}${t}${t}"
+  echo "%3${t}3000${t}o${t}1${t}3${t}opencode${t}/p${t}${t}${t}"
+  echo "%4${t}4000${t}o${t}1${t}4${t}opencode${t}/p${t}${t}${t}"
+  echo "%5${t}5000${t}o${t}2${t}1${t}opencode${t}/p${t}${t}${t}"
+  echo "%6${t}6000${t}o${t}2${t}2${t}claude${t}/p${t}${t}${t}"
+  echo "%7${t}7000${t}o${t}2${t}3${t}opencode${t}/p${t}${t}${t}"
+} > "$W/panes4"
+awk -v tools="$TOOLS" -v psc="$W/psc4" -v psa="$W/psa4" -v panes="$W/panes4" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc4" "$W/psa4" "$W/panes4" > "$W/plan4"
+check "opencode: live marker" "$(col 1.1 9 "$W/plan4"):$(col 1.1 11 "$W/plan4")" "marker:opencode --session ses_abc"
+check "opencode: -s <id> on the command line, flags dropped" "$(col 1.2 11 "$W/plan4")" "opencode --session ses_def"
+check "opencode: --session=<id>" "$(col 1.3 10 "$W/plan4")" "ses_ghi"
+check "opencode serve is not an interactive CLI" "$(col 1.4 7 "$W/plan4")$(col 1.4 11 "$W/plan4")" ""
+check "opencode --prompt \"run tests\" is interactive (run only counts as the subcommand)" \
+    "$(col 2.1 7 "$W/plan4"):$(col 2.1 11 "$W/plan4")" "opencode:opencode"
+check "a pane running only claude -p restores as a plain shell" "$(col 2.2 7 "$W/plan4")$(col 2.2 11 "$W/plan4")" ""
+check "opencode run inside an opencode pane: the TUI is tracked" "$(col 2.3 8 "$W/plan4"):$(col 2.3 10 "$W/plan4")" "7001:ses_out"
+
+# codex: `resume <id>` is a subcommand; npm installs a node shim that runs the native binary.
+cat > "$W/psc5" <<'EOF'
+ 1000     1 -zsh
+ 1001  1000 codex
+ 2000     1 -zsh
+ 2001  2000 codex
+ 3000     1 -zsh
+ 3001  3000 codex
+ 4000     1 -zsh
+ 4001  4000 codex
+ 5000     1 -zsh
+ 5001  5000 node
+ 5002  5001 codex
+ 6000     1 -zsh
+ 6001  6000 node
+ 6002  6001 codex
+EOF
+cat > "$W/psa5" <<EOF
+ 1000 -zsh
+ 1001 codex resume $U1
+ 2000 -zsh
+ 2001 codex exec fix the tests
+ 3000 -zsh
+ 3001 codex resume --last
+ 4000 -zsh
+ 4001 codex -m o3 resume the work
+ 5000 -zsh
+ 5001 node /opt/homebrew/bin/codex resume $U2
+ 5002 /opt/homebrew/lib/node_modules/@openai/codex/vendor/aarch64-apple-darwin/codex/codex resume $U2
+ 6000 -zsh
+ 6001 node /opt/homebrew/bin/codex
+ 6002 /opt/homebrew/lib/node_modules/@openai/codex/vendor/aarch64-apple-darwin/codex/codex
+EOF
+{
+  echo "%1${t}1000${t}c${t}1${t}1${t}codex${t}/p${t}${t}${t}"
+  echo "%2${t}2000${t}c${t}1${t}2${t}codex${t}/p${t}${t}${t}"
+  echo "%3${t}3000${t}c${t}1${t}3${t}codex${t}/p${t}${t}${t}"
+  echo "%4${t}4000${t}c${t}1${t}4${t}codex${t}/p${t}${t}${t}"
+  echo "%5${t}5000${t}c${t}2${t}1${t}node${t}/p${t}${t}${t}"
+  echo "%6${t}6000${t}c${t}2${t}2${t}node${t}/p${t}codex${t}thr_abc123${t}6002"
+} > "$W/panes5"
+awk -v tools="$TOOLS" -v psc="$W/psc5" -v psa="$W/psa5" -v panes="$W/panes5" -v bases="codex=codex --yolo" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc5" "$W/psa5" "$W/panes5" > "$W/plan5"
+check "codex: resume <id> subcommand on the command line" "$(col 1.1 9 "$W/plan5"):$(col 1.1 11 "$W/plan5")" \
+    "argv:codex --yolo resume $U1"
+check "codex exec is a one-shot run, not the pane's CLI" "$(col 1.2 7 "$W/plan5")" ""
+check "codex resume --last: no id, cold launch" "$(col 1.3 10 "$W/plan5"):$(col 1.3 11 "$W/plan5")" ":codex --yolo"
+check "codex: 'resume the' from a prompt is not an id" "$(col 1.4 10 "$W/plan5")" ""
+check "codex npm shim: the shallowest codex (node script) is tracked" "$(col 2.1 8 "$W/plan5"):$(col 2.1 10 "$W/plan5")" "5001:$U2"
+check "codex npm shim: marker from the native child is live" "$(col 2.2 9 "$W/plan5"):$(col 2.2 11 "$W/plan5")" \
+    "marker:codex --yolo resume thr_abc123"
+
+# gemini: a node CLI that relaunches itself as a child (the session) running dist/index.js.
+cat > "$W/psc6" <<'EOF'
+ 1000     1 -zsh
+ 1001  1000 node
+ 1002  1001 node
+ 2000     1 -zsh
+ 2001  2000 node
+ 2002  2001 node
+ 3000     1 -zsh
+ 3001  3000 node
+ 4000     1 -zsh
+ 4001  4000 node
+EOF
+cat > "$W/psa6" <<EOF
+ 1000 -zsh
+ 1001 node /opt/homebrew/bin/gemini -m gemini-3-pro
+ 1002 node --max-old-space-size=8192 /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js -m gemini-3-pro
+ 2000 -zsh
+ 2001 node /opt/homebrew/bin/gemini --resume $U3
+ 2002 node --max-old-space-size=8192 /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js --resume $U3
+ 3000 -zsh
+ 3001 node /opt/homebrew/bin/gemini -p summarize this
+ 4000 -zsh
+ 4001 node /opt/homebrew/bin/gemini -r latest
+EOF
+{
+  echo "%1${t}1000${t}g${t}1${t}1${t}node${t}/p${t}gemini${t}$U4${t}1001"
+  echo "%2${t}2000${t}g${t}1${t}2${t}node${t}/p${t}${t}${t}"
+  echo "%3${t}3000${t}g${t}1${t}3${t}node${t}/p${t}${t}${t}"
+  echo "%4${t}4000${t}g${t}1${t}4${t}node${t}/p${t}${t}${t}"
+} > "$W/panes6"
+awk -v tools="$TOOLS" -v psc="$W/psc6" -v psa="$W/psa6" -v panes="$W/panes6" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc6" "$W/psa6" "$W/panes6" > "$W/plan6"
+check "gemini (node): live marker from the CLI process, flags dropped" \
+    "$(col 1.1 8 "$W/plan6"):$(col 1.1 9 "$W/plan6"):$(col 1.1 11 "$W/plan6")" "1001:marker:gemini --resume $U4"
+check "gemini (node): --resume <uuid> read back from the launcher" "$(col 1.2 9 "$W/plan6"):$(col 1.2 10 "$W/plan6")" "argv:$U3"
+check "gemini -p is a one-shot run" "$(col 1.3 7 "$W/plan6")" ""
+check "gemini -r latest: not an id, cold launch" "$(col 1.4 10 "$W/plan6"):$(col 1.4 11 "$W/plan6")" ":gemini"
 
 if [ "$fail" -eq 0 ]; then echo "PASS"; else echo "FAILURES"; exit 1; fi

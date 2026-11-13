@@ -1,0 +1,27 @@
+# tools.tsv — every AI CLI tmux-ai-sessions-restore knows how to resume. The single source of
+# truth for the save/restore path: tools.awk (plan.awk, rewrite.awk), helpers.sh and the TPM
+# entrypoint all read it. Adding a CLI = one row here + its install_<tool>/uninstall_<tool>
+# functions in install_hooks.sh / uninstall_hooks.sh (capture is inherently tool-specific).
+#
+# Tab-separated, one row per tool, every cell non-empty ("-" = none). Columns:
+#   1 tool       name used in @ai_tool, @ai-restore-enabled-tools, @ai-restore-<tool>-command
+#   2 regex      ERE for the CLI process: matched against the basename of comm, of argv[0],
+#                and (for node/bun) of the first non-option argument (the script)
+#   3 base       default launch command (override per tool with @ai-restore-<tool>-command)
+#   4 resume     appended to the base to resume; {id} is replaced by the session id
+#   5 id_flags   comma list of argv words followed by the session id on a running CLI's
+#                command line: `--f v`, and `--f=v` for flags starting with `--`; a bare word
+#                is a subcommand (`codex resume <id>`)
+#   6 pin_flags  like id_flags, but lower priority: an id the CLI was pinned to at launch
+#   7 id_fmt     uuid (exactly a UUID) | safe ([A-Za-z0-9][A-Za-z0-9._:-]*)
+#   8 match      word resurrect matches in the saved command (`~<match>` in
+#                @resurrect-processes); also how a recorded command is recognised as this tool's
+#   9 oneshot    comma list marking a non-interactive run whose prompt hook must not take over
+#                the pane: a flag (`-p`) anywhere, or a bare word = the subcommand (`run`)
+#
+# tool	regex	base	resume	id_flags	pin_flags	id_fmt	match	oneshot
+claude	^claude$	claude	--resume {id}	--resume,-r	--session-id	uuid	claude	-p,--print,--bg,--background,--no-interactive
+kiro	^kiro-cli(-chat)?$	kiro-cli chat	--resume-id {id}	--resume-id	-	safe	kiro-cli	-p,--print,--bg,--background,--no-interactive
+opencode	^opencode$	opencode	--session {id}	--session,-s	-	safe	opencode	run,serve,web,acp
+codex	^codex$	codex	resume {id}	resume	-	uuid	codex	exec,e,app-server,mcp-server
+gemini	^gemini$	gemini	--resume {id}	--resume,-r	-	uuid	gemini	-p,--prompt

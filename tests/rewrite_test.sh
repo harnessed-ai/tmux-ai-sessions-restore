@@ -40,7 +40,7 @@ printf '111\t/real/cwd\n222\t/p2\n' > "$W/cwds"   # 777 unknown: keep resurrect'
   line state s s
 } > "$W/save"
 
-awk -v plan="$W/plan" -v cwds="$W/cwds" -f "$ROOT/scripts/rewrite.awk" "$W/plan" "$W/cwds" "$W/save" > "$W/out"
+awk -v tools="$ROOT/scripts/tools.tsv" -v plan="$W/plan" -v cwds="$W/cwds" -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/rewrite.awk" "$W/plan" "$W/cwds" "$W/save" > "$W/out"
 
 fail=0
 pane() { awk -F'\t' -v w="$1" -v p="$2" '$1=="pane" && $3==w && $6==p' "$W/out"; }
@@ -62,7 +62,7 @@ check "AI command misattributed to a non-AI pane cleared" "$(pane 1 4)" \
 check "pane changed during the save: raw AI argv reduced to a cold launch" "$(pane 2 1)" \
     "$(line pane s 2 1 ':' 1 '✳ Claude Code' ':/old' 0 zsh ':claude')"
 check "  ... using @ai-restore-claude-command" \
-    "$(awk -v plan="$W/plan" -v cwds="$W/cwds" -v claude_base="claude --verbose" -f "$ROOT/scripts/rewrite.awk" \
+    "$(awk -v tools="$ROOT/scripts/tools.tsv" -v plan="$W/plan" -v cwds="$W/cwds" -v bases="claude=claude --verbose" -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/rewrite.awk" \
         "$W/plan" "$W/cwds" "$W/save" | awk -F'\t' '$1=="pane" && $3==2 && $6==1 { print $11 }')" ":claude --verbose"
 check "non-AI pane untouched" "$(pane 2 2)" "$(line pane s 2 2 ':' 2 host ':/v' 0 vim ':vim notes.md')"
 check "resurrect's escaped-space dir still matches; unknown cwd kept" "$(pane 2 3)" \
@@ -71,9 +71,29 @@ check "window/state lines untouched" "$(grep -v '^pane' "$W/out")" "$(grep -v '^
 check "every pane line still has 11 fields" \
     "$(awk -F'\t' '$1=="pane" && NF!=11' "$W/out" | wc -l | tr -d ' ')" "0"
 
-summary="$(awk -v plan="$W/plan" -v cwds="$W/cwds" -v explain=1 -f "$ROOT/scripts/rewrite.awk" \
+summary="$(awk -v tools="$ROOT/scripts/tools.tsv" -v plan="$W/plan" -v cwds="$W/cwds" -v explain=1 -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/rewrite.awk" \
     "$W/plan" "$W/cwds" "$W/save" | tail -1)"
 check "--explain summary" "$summary" \
     "3 AI pane(s) rewritten, 1 skipped (pane changed), 2 shifted line(s) repaired, 2 stray line(s) dropped, 1 misattributed AI command(s) cleared"
+
+# A pane that changed during the save falls back to the cold launch of the tool its recorded
+# command names (the tool whose word comes first) — not always Claude.
+{
+  line s 3 1 901 zsh /a opencode 911 marker ses_1 "opencode --session ses_1" ""
+  line s 3 2 902 zsh /b kiro     922 argv   k-2   "kiro-cli chat --resume-id k-2" ""
+  line s 3 3 903 zsh /c claude   933 marker U3    "claude --resume U3" ""
+} > "$W/plan2"
+{
+  line pane s 3 1 ':' 1 host ':/a' 0 opencode ':opencode -s ses_0 --model x/y'
+  line pane s 3 2 ':' 2 host ':/b' 0 kiro-cli ':kiro-cli chat --agent claude'
+  line pane s 3 3 ':' 3 host ':/c' 0 claude ':/usr/local/bin/claude --resume U0 --add-dir /x/kiro-cli'
+} > "$W/save2"
+: > "$W/cwds2"
+awk -v tools="$ROOT/scripts/tools.tsv" -v plan="$W/plan2" -v cwds="$W/cwds2" -v bases="opencode=opencode --agent plan" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/rewrite.awk" "$W/plan2" "$W/cwds2" "$W/save2" > "$W/out2"
+f11() { awk -F'\t' -v p="$1" '$1=="pane" && $6==p { print $11 }' "$W/out2"; }
+check "cold launch of the recorded tool: opencode (with its override)" "$(f11 1)" ":opencode --agent plan"
+check "cold launch of the recorded tool: kiro, though claude appears later" "$(f11 2)" ":kiro-cli chat"
+check "cold launch of the recorded tool: claude, though kiro-cli appears later" "$(f11 3)" ":claude"
 
 if [ "$fail" -eq 0 ]; then echo "PASS"; else echo "FAILURES"; exit 1; fi

@@ -1,12 +1,14 @@
 /*
- * fake_ai_cli.c — stand-in for `claude` / `kiro-cli chat` used by the adversarial tests.
+ * fake_ai_cli.c — stand-in for the AI CLIs (`claude`, `kiro-cli chat`, `opencode`, `codex`, `gemini`) used by the
+ * adversarial tests.
  *
- * Compiled into binaries literally named `claude` and `kiro-cli`, so the process name (comm),
+ * Compiled into binaries literally named after each CLI, so the process name (comm),
  * argv and process tree look like the real CLIs to ps, tmux and tmux-resurrect. It emulates
  * only what the restore layer depends on:
  *
  *   - session ids: a fresh launch gets a new id; `--resume <id>` / `-r <id>` / `--resume=<id>`
- *     (claude) or `chat --resume-id <id>` (kiro) resumes that id without forking, like the
+ *     (claude), `chat --resume-id <id>` (kiro) `--session <id>` / `-s <id>` (opencode), `resume <id>` (codex) or `--resume <id>` / `-r <id>`
+ *     (gemini) resumes that id without forking, like the
  *     real CLIs; `--session-id <id>` pins one; `-c` / `--continue` (kiro: `-r`) picks the
  *     newest transcript in the cwd.
  *   - resume is scoped to the cwd: transcripts live at $FAKE_AI_HOME/<tool>/<cwd-slug>/<id>,
@@ -18,6 +20,11 @@
  *     the prompt hook runs ($FAKE_AI_HOOK <tool>, via /bin/sh -c, with the hook JSON on stdin).
  *     A positional prompt on the command line is submitted the same way at startup; with
  *     -p / --print the CLI exits right after it.
+ *   - node CLIs: compiled as `node`, it acts as the CLI named by its script (the first
+ *     non-option argument; `index.js` means $FAKE_AI_AS), so a `#!/usr/bin/env node` script
+ *     called `gemini` looks like the real npm install to ps. Like the real Gemini CLI, that
+ *     process relaunches itself as a child `node --max-old-space-size=... <dir>/index.js ...`
+ *     (unless $GEMINI_CLI_NO_RELAUNCH) and waits for it: the session runs in the child.
  *   - every launch / resume / prompt / switch / exit is appended to $FAKE_AI_LOG, tab-separated:
  *     event pid $TMUX_PANE cwd session_id detail argv
  *   - $FAKE_AI_TITLE sets the pane title at startup (Claude does this); with
@@ -30,14 +37,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static char sid[128];
 static char cwd[PATH_MAX];
 static char argvline[8192];
+enum tool { T_CLAUDE, T_KIRO, T_OPENCODE, T_CODEX, T_GEMINI };
+static enum tool tool;
 static int is_kiro;
 
-static const char *tool_name(void) { return is_kiro ? "kiro" : "claude"; }
+static const char *tool_name(void) {
+    static const char *names[] = {"claude", "kiro", "opencode", "codex", "gemini"};
+    return names[tool];
+}
 
 static void new_id(char *out) {
     unsigned char b[16];
@@ -165,6 +178,30 @@ static int takes_value(const char *a) {
     return 0;
 }
 
+/* `node [node-opts] <script> args...` as the npm-installed gemini: relaunch as a child
+ * `node --max-old-space-size=4096 <script dir>/index.js args...` and wait for it. */
+static int relaunch_child(char **argv, int argc, int script) {
+    char idx[PATH_MAX], **cargv = calloc(argc + 3, sizeof *cargv);
+    const char *slash = strrchr(argv[script], '/');
+    int n = 0, status = 0;
+    pid_t c;
+    snprintf(idx, sizeof idx, "%.*s/index.js", slash ? (int)(slash - argv[script]) : 1,
+             slash ? argv[script] : ".");
+    cargv[n++] = "node";
+    cargv[n++] = "--max-old-space-size=4096";
+    cargv[n++] = idx;
+    for (int k = script + 1; k < argc; k++) cargv[n++] = argv[k];
+    cargv[n] = NULL;
+    if ((c = fork()) == 0) {
+        setenv("GEMINI_CLI_NO_RELAUNCH", "1", 1);
+        setenv("FAKE_AI_AS", "gemini", 1);
+        execvp("node", cargv);
+        _exit(127);
+    }
+    if (c < 0 || waitpid(c, &status, 0) < 0) return 1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}
+
 int main(int argc, char **argv) {
     const char *base = strrchr(argv[0], '/');
     const char *resume = NULL, *pinned = NULL, *positional = NULL;
@@ -172,13 +209,27 @@ int main(int argc, char **argv) {
     char line[4096];
 
     base = base ? base + 1 : argv[0];
-    is_kiro = !strcmp(base, "kiro-cli");
     if (!getcwd(cwd, sizeof cwd)) strcpy(cwd, "?");
     argvline[0] = 0;
     for (int k = 0; k < argc; k++) {
         strncat(argvline, argv[k], sizeof argvline - strlen(argvline) - 2);
         if (k + 1 < argc) strcat(argvline, " ");
     }
+    if (!strcmp(base, "node")) { /* act as the CLI named by the script */
+        int script = 1;
+        while (script < argc && argv[script][0] == '-') script++;
+        if (script >= argc) { fprintf(stderr, "fake node: no script\n"); return 2; }
+        base = strrchr(argv[script], '/');
+        base = base ? base + 1 : argv[script];
+        if (!strcmp(base, "index.js") && getenv("FAKE_AI_AS")) base = getenv("FAKE_AI_AS");
+        else if (!strcmp(base, "gemini") && !getenv("GEMINI_CLI_NO_RELAUNCH"))
+            return relaunch_child(argv, argc, script);
+        argv += script;
+        argc -= script;
+    }
+    tool = !strcmp(base, "kiro-cli") ? T_KIRO : !strcmp(base, "opencode") ? T_OPENCODE
+         : !strcmp(base, "codex") ? T_CODEX : !strcmp(base, "gemini") ? T_GEMINI : T_CLAUDE;
+    is_kiro = tool == T_KIRO;
 
     if (is_kiro) {
         if (i >= argc || strcmp(argv[i], "chat")) {
@@ -187,8 +238,46 @@ int main(int argc, char **argv) {
         }
         i++;
     }
+    if (tool == T_OPENCODE && i < argc && !strcmp(argv[i], "run")) { /* one-shot, like -p */
+        print_mode = 1;
+        i++;
+    }
+    if (tool == T_CODEX && i < argc && !strcmp(argv[i], "exec")) { /* one-shot, like -p */
+        print_mode = 1;
+        i++;
+    } else if (tool == T_CODEX && i < argc && !strcmp(argv[i], "resume")) {
+        i++;
+        if (i < argc && !strcmp(argv[i], "--last")) { cont = 1; i++; }
+        else if (i < argc && argv[i][0] != '-') resume = argv[i++];
+        else { fprintf(stderr, "fake codex: resume picker not emulated\n"); return 3; }
+    }
     for (; i < argc; i++) {
         const char *a = argv[i];
+        if (tool == T_GEMINI) {
+            if ((!strcmp(a, "--resume") || !strcmp(a, "-r")) && i + 1 < argc) {
+                if (!strcmp(argv[i + 1], "latest")) { cont = 1; i++; }
+                else resume = argv[++i];
+            } else if (!strncmp(a, "--resume=", 9)) resume = a + 9;
+            else if ((!strcmp(a, "-p") || !strcmp(a, "--prompt")) && i + 1 < argc) {
+                print_mode = 1; positional = argv[++i]; npos++;
+            } else if (!strcmp(a, "-m") || !strcmp(a, "--model")) { if (i + 1 < argc) i++; }
+            else if (a[0] != '-') { positional = a; npos++; }
+            continue;
+        }
+        if (tool == T_CODEX) {
+            if (!strcmp(a, "-c") || !strcmp(a, "-m") || !strcmp(a, "--model") || !strcmp(a, "-s") ||
+                !strcmp(a, "-a") || !strcmp(a, "-C")) { if (i + 1 < argc) i++; }
+            else if (a[0] != '-') { positional = a; npos++; }
+            continue;
+        }
+        if (tool == T_OPENCODE) {
+            if ((!strcmp(a, "--session") || !strcmp(a, "-s")) && i + 1 < argc) resume = argv[++i];
+            else if (!strncmp(a, "--session=", 10)) resume = a + 10;
+            else if (!strcmp(a, "-c") || !strcmp(a, "--continue")) cont = 1;
+            else if (a[0] == '-') { if (takes_value(a) && i + 1 < argc) i++; }
+            else { positional = a; npos++; }
+            continue;
+        }
         if (!is_kiro && (!strcmp(a, "--resume") || !strcmp(a, "-r"))) {
             if (i + 1 < argc && argv[i + 1][0] != '-') resume = argv[++i];
             else { fprintf(stderr, "fake claude: interactive picker not emulated\n"); return 3; }

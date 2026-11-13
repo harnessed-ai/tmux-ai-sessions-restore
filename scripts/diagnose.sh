@@ -42,7 +42,16 @@ esac
 save_script="$(tmux show-option -gqv '@resurrect-save-script-path')"
 if [ -n "$save_script" ]; then ok "tmux-resurrect loaded ($save_script)"; else warn "tmux-resurrect doesn't look loaded (@resurrect-save-script-path unset)"; fi
 procs="$(tmux show-option -gqv '@resurrect-processes')"
-case "$procs" in *'~claude'*) ok "@resurrect-processes: $procs" ;; *) warn "@resurrect-processes lacks ~claude — restore would leave AI panes as bare shells ($procs)" ;; esac
+missing=''
+for tool in $(air_enabled_tools); do
+    m="$(air_tool_field "$tool" match)" || continue
+    case "$procs" in *"~$m"*) ;; *) missing="$missing ~$m" ;; esac
+done
+if [ -z "$missing" ]; then ok "@resurrect-processes: $procs"
+else warn "@resurrect-processes lacks$missing — restore would leave those AI panes as bare shells ($procs)"; fi
+
+echo "== capture hooks   (enabled: $(air_enabled_tools))"
+bash "$HERE/install_hooks.sh" --check
 
 echo "== auto-save (tmux-continuum)"
 status_opts="$(tmux show-option -gqv status-right) $(tmux show-option -gqv status-left)"

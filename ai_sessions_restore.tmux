@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tmux-ai-sessions-restore — TPM entrypoint.
 #
-# Hooks into tmux-resurrect's save step so AI coding panes (claude / kiro-cli chat) come
-# back *resumed* on restore. Layout / panes / cwd remain the job of resurrect+continuum.
+# Hooks into tmux-resurrect's save step so AI coding panes (the CLIs in scripts/tools.tsv)
+# come back *resumed* on restore. Layout / panes / cwd remain the job of resurrect+continuum.
 #
 # Load AFTER tmux-resurrect and BEFORE tmux-continuum (this must set @resurrect-processes
 # before continuum's backgrounded auto-restore runs, or restore yields bare shells):
@@ -10,11 +10,13 @@
 #   set -g @plugin '<you>/tmux-ai-sessions-restore'
 #   set -g @plugin 'tmux-plugins/tmux-continuum'
 #
-# On first load this also registers the per-tool capture hooks (Claude / Kiro prompt hooks)
-# by running scripts/install_hooks.sh once. Disable that with:
+# On first load this also registers the per-tool capture hooks (each CLI's prompt hook) by
+# running scripts/install_hooks.sh once — and again when a newer version adds a CLI. Disable that with:
 #   set -g @ai-restore-auto-install 'off'   # then run scripts/install_hooks.sh yourself
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/helpers.sh
+. "$CURRENT_DIR/scripts/helpers.sh"
 HOOK_CMD="bash '$CURRENT_DIR/scripts/rewrite_save.sh'"
 
 # wire_hook <option>: make <option> run our rewriter exactly once, at this path, without
@@ -70,20 +72,24 @@ fi
 # resurrect only re-runs a pane's saved command if it matches @resurrect-processes, so add
 # a relaxed (~) match for each enabled tool's binary — without clobbering the user's list.
 # Without this, restore brings back the layout but every AI pane is just a bare shell.
-enabled="$(tmux show-option -gqv '@ai-restore-enabled-tools' 2>/dev/null)"
-enabled="${enabled:-claude kiro}"
 procs="$(tmux show-option -gqv '@resurrect-processes' 2>/dev/null)"
 add=''
-case " $enabled " in *' claude '*) case "$procs" in *'~claude'*) : ;; *) add="$add ~claude" ;; esac ;; esac
-case " $enabled " in *' kiro '*)   case "$procs" in *'~kiro-cli'*) : ;; *) add="$add ~kiro-cli" ;; esac ;; esac
+for tool in $(air_enabled_tools); do
+	m="$(air_tool_field "$tool" match)" || continue
+	case "$procs$add" in *"~$m"*) : ;; *) add="$add ~$m" ;; esac
+done
 if [ -n "$add" ]; then
 	procs="${procs}${add}"
 	tmux set-option -g '@resurrect-processes' "${procs# }"
 fi
 
 # Register the capture hooks once (idempotent). Backgrounded so tmux startup never blocks;
-# a stamp file keeps it from re-running (and re-spawning kiro-cli) on every tmux start.
+# a stamp file keeps it from re-running (and re-spawning kiro-cli) on every tmux start. The
+# stamp records the tool list it ran for, so an update that adds a CLI installs its hook too
+# (an older, empty stamp counts as "not this list").
 auto_install="$(tmux show-option -gqv '@ai-restore-auto-install' 2>/dev/null)"
-if [ "$auto_install" != "off" ] && [ ! -f "$CURRENT_DIR/.hooks_installed" ]; then
-	tmux run-shell -b "bash '$CURRENT_DIR/scripts/install_hooks.sh' >/dev/null 2>&1 && touch '$CURRENT_DIR/.hooks_installed'"
+stamp="$CURRENT_DIR/.hooks_installed"
+all_tools="$(air_tools)"
+if [ "$auto_install" != "off" ] && [ "$(cat "$stamp" 2>/dev/null)" != "$all_tools" ]; then
+	tmux run-shell -b "bash '$CURRENT_DIR/scripts/install_hooks.sh' >/dev/null 2>&1 && printf '%s' '$all_tools' > '$stamp'"
 fi

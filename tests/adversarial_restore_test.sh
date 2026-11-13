@@ -4,7 +4,7 @@
 # Spins up PRIVATE tmux servers (tmux -L <socket>, env -i, scratch HOME, scratch
 # @resurrect-dir) that load the REAL tmux-resurrect plus the plugin under test, and fills
 # them with the kind of workspace that runs for weeks: 3 sessions, 10 windows, 40 panes,
-# most of them running a fake `claude` / `kiro-cli` (tests/fixtures/fake_ai_cli.c, compiled
+# most of them running a fake `claude` / `kiro-cli` / `opencode` / `codex` / `gemini` (fake_ai_cli.c, compiled
 # to binaries with exactly those names, so ps / tmux / resurrect see what they'd see for the
 # real CLIs). Panes then go through what long-lived panes go through: prompts, /clear,
 # /resume, exits and relaunches, a positional first prompt, a nested `claude -p` run by the
@@ -60,6 +60,13 @@ for rc in .zshrc .bashrc .bash_profile; do printf 'export PATH="%s:$PATH"\n' "$B
 : > "$LOG"
 "$CC_BIN" -O -o "$BIN/claude" "$ROOT/tests/fixtures/fake_ai_cli.c" || { echo "FAIL: compile fake CLI"; exit 1; }
 "$CC_BIN" -O -o "$BIN/kiro-cli" "$ROOT/tests/fixtures/fake_ai_cli.c" || exit 1
+"$CC_BIN" -O -o "$BIN/opencode" "$ROOT/tests/fixtures/fake_ai_cli.c" || exit 1
+"$CC_BIN" -O -o "$BIN/codex" "$ROOT/tests/fixtures/fake_ai_cli.c" || exit 1
+# gemini is a node CLI: a `#!/usr/bin/env node` script run by a fake node, which relaunches
+# itself as a child (the session) like the real one
+"$CC_BIN" -O -o "$BIN/node" "$ROOT/tests/fixtures/fake_ai_cli.c" || exit 1
+printf '#!/usr/bin/env node\n' > "$BIN/gemini"; chmod +x "$BIN/gemini"
+FAKE_CLIS="claude kiro-cli opencode codex gemini node"
 
 T() { "$TMUX_BIN" -L "$SOCK" "$@"; }
 
@@ -103,10 +110,10 @@ start_server() { # <session> <dir>  — a clean env, like a terminal starting tm
 preflight() { # a real CLI must never run here: check what a pane's shell resolves first
     local p out="$WORK/which.$$.$RANDOM"
     p="$(T list-panes -a -F '#{pane_id}' | head -1)"
-    T send-keys -t "$p" -l "{ command -v claude; command -v kiro-cli; } > '$out.tmp' 2>&1; mv '$out.tmp' '$out'"
+    T send-keys -t "$p" -l "{ for c in $FAKE_CLIS; do command -v \$c; done; } > '$out.tmp' 2>&1; mv '$out.tmp' '$out'"
     T send-keys -t "$p" Enter
     wait_until 100 test -f "$out"
-    if [ "$(cat "$out" 2>/dev/null)" != "$(printf '%s\n%s' "$BIN/claude" "$BIN/kiro-cli")" ]; then
+    if [ "$(cat "$out" 2>/dev/null)" != "$(for c in $FAKE_CLIS; do printf '%s\n' "$BIN/$c"; done)" ]; then
         echo "ABORT: test panes resolve the AI CLIs to: $(tr '\n' ' ' < "$out" 2>/dev/null)"
         echo "       (expected the fakes in $BIN) — refusing to run anything that could start a real CLI"
         exit 1
@@ -209,6 +216,18 @@ scn_kiro_fresh()      { cdp "$1" "$2"; start_ai "$1" "kiro-cli chat" launch; pro
                         expect "$1" kiro_fresh kiro resume "$(last_sid "$1")" "$2" ""; }
 scn_kiro_restored()   { local o; o="$(seed kiro "$2")"; cdp "$1" "$2"; start_ai "$1" "kiro-cli chat --resume-id $o" resume
                         prompt_ai "$1" more; expect "$1" kiro_restored kiro resume "$o" "$2" ""; }
+scn_opencode_fresh()  { cdp "$1" "$2"; start_ai "$1" opencode launch; prompt_ai "$1" hi
+                        expect "$1" opencode_fresh opencode resume "$(last_sid "$1")" "$2" ""; }
+scn_opencode_restored() { local o; o="$(seed opencode "$2")"; cdp "$1" "$2"; start_ai "$1" "opencode -s $o" resume
+                        prompt_ai "$1" more; expect "$1" opencode_restored opencode resume "$o" "$2" ""; }
+scn_codex_fresh()     { cdp "$1" "$2"; start_ai "$1" "codex -c model_reasoning_effort=high" launch; prompt_ai "$1" hi
+                        expect "$1" codex_fresh codex resume "$(last_sid "$1")" "$2" "-c"; }
+scn_codex_restored()  { local o; o="$(seed codex "$2")"; cdp "$1" "$2"; start_ai "$1" "codex resume $o" resume
+                        expect "$1" codex_restored codex resume "$o" "$2" ""; }
+scn_gemini_fresh()    { cdp "$1" "$2"; start_ai "$1" "gemini -m gemini-3-pro" launch; prompt_ai "$1" hi
+                        expect "$1" gemini_fresh gemini resume "$(last_sid "$1")" "$2" "-m"; }
+scn_gemini_restored() { local o; o="$(seed gemini "$2")"; cdp "$1" "$2"; start_ai "$1" "gemini -r $o" resume
+                        expect "$1" gemini_restored gemini resume "$o" "$2" ""; }
 scn_nested_print()    { local outer n; cdp "$1" "$2"; start_ai "$1" claude launch; prompt_ai "$1" hello
                         outer="$(last_sid "$1")"; n="$(ev_count "$1" exit)"
                         sk "$1" "!claude -p nested-question"   # the session's Bash tool runs a one-shot claude
@@ -218,9 +237,9 @@ scn_fallback_then_prompt() { cdp "$1" "$2"; start_ai "$1" "claude --resume 00000
                         prompt_ai "$1" hello
                         expect "$1" fallback_then_prompt claude resume "$(last_sid "$1")" "$2" ""; }
 
-SCENARIOS="fresh_prompted fresh_prompted fresh_prompted nested_print fresh_idle fresh_idle
-restored_idle restored_idle restored_prompted restored_prompted
-restored_clear restored_clear restored_clear restored_clear restored_switch restored_switch
+SCENARIOS="fresh_prompted fresh_prompted codex_fresh nested_print fresh_idle gemini_restored
+restored_idle codex_restored restored_prompted gemini_fresh
+restored_clear restored_clear opencode_fresh opencode_restored restored_switch restored_switch
 flags_restored_clear flags_restored_clear exit_relaunch_resume exit_relaunch_resume
 exit_to_shell exit_to_shell exit_relaunch_fresh exit_relaunch_fresh positional positional
 empty_title empty_title space_dir space_dir wrapper_cd wrapper_cd less_pane less_pane
