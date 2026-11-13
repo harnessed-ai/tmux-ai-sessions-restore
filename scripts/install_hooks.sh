@@ -5,6 +5,12 @@
 # We hook the prompt event (Claude UserPromptSubmit / Kiro userPromptSubmit / ...) rather
 # than session start, so a pane is only marked once its session actually has a transcript.
 #
+# Claude Code and Kiro report through the shared harnessed-ai hook (scripts/agent-hook.sh,
+# an identical copy of which other tmux plugins ship too): it records @agent_session_id on
+# the first prompt, and rewrite_save.sh reads that. With several such plugins installed,
+# each agent event runs one hook instead of one per plugin. The other CLIs keep our own
+# capture_session.sh.
+#
 # One install_<tool> (and check_<tool>) function per tool in tools.tsv; a CLI that isn't
 # installed is skipped. Idempotent and reversible (see uninstall_hooks.sh). You launch the
 # CLIs exactly as before; these hooks just stamp the live session id onto the tmux pane.
@@ -22,8 +28,32 @@ mode=install
 tools="$*"   # optional tool names (default: every tool in tools.tsv)
 [ "$mode" = check ] || command -v jq >/dev/null 2>&1 || { echo "✗ jq is required (brew install jq)"; exit 1; }
 
-# hook_state <file>: "present" if <file> mentions our capture script, else "missing".
-hook_state() { if [ -f "$1" ] && grep -q 'capture_session\.sh' "$1" 2>/dev/null; then echo present; else echo missing; fi; }
+# hook_state <file> [script]: "present" if <file> mentions the hook script (default: our
+# capture script), else "missing".
+hook_state() { if [ -f "$1" ] && grep -qF "${2:-capture_session.sh}" "$1" 2>/dev/null; then echo present; else echo missing; fi; }
+
+# drop_capture <json file>: remove our capture_session.sh entries (a CLI that now reports
+# through the shared agent hook), from either hooks layout, keeping everything else.
+drop_capture() {
+	[ -f "$1" ] || return 0
+	local tmp; tmp="$(mktemp)"
+	jq '
+		if (.hooks? | type) == "object" then
+			.hooks |= with_entries(.value |= (
+				map(if (type == "object" and (.hooks | type) == "array")
+				    then .hooks |= map(select((.command // "") | contains("capture_session.sh") | not))
+				    else . end)
+				| map(select(
+					if (type == "object" and (.hooks | type) == "array") then (.hooks | length) > 0
+					else ((.command? // "") | contains("capture_session.sh") | not) end))))
+		else . end
+	' "$1" > "$tmp" && { cmp -s "$1" "$tmp" && rm -f "$tmp" || mv "$tmp" "$1"; }
+}
+
+# shared_hook <tool>: register the shared agent hook for one CLI (claude | kiro).
+shared_hook() {
+	AGENT_HOOK_TOOLS="$1" bash "$HERE/install-hooks.sh" | sed 's/^/  /'
+}
 report() { # report <tool> <cli> <state> <where> [note]
 	if ! command -v "$2" >/dev/null 2>&1; then printf '  -     %-8s %s not on PATH\n' "$1" "$2"
 	elif [ "$3" = present ]; then printf '  ok    %-8s hook in %s%s\n' "$1" "$4" "${5:+ ($5)}"
@@ -36,8 +66,9 @@ install_claude() {
 		return
 	fi
 	local settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-	add_hook_group "$settings" UserPromptSubmit "bash \"$CAP\" claude"
-	echo "✓ Claude UserPromptSubmit hook → $settings"
+	drop_capture "$settings"
+	shared_hook claude
+	echo "✓ Claude reports through the shared agent hook → $settings"
 }
 
 # add_hook_group <json file> <event> <command>: the Claude-style hooks layout that Codex and
@@ -61,7 +92,7 @@ add_hook_group() {
 
 check_claude() {
 	local settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-	report claude claude "$(hook_state "$settings")" "$settings"
+	report claude claude "$(hook_state "$settings" agent-hook.sh)" "$settings" "shared agent hook"
 }
 
 # Current default Kiro agent (the entry marked with '*' in `kiro-cli agent list`).
@@ -79,7 +110,6 @@ install_kiro() {
 		echo "• kiro-cli not found — skipping Kiro hook"
 		return
 	fi
-	local cmd="bash \"$CAP\" kiro"
 	local def file
 	def="$(kiro_default_agent)"
 	file="$HOME/.kiro/agents/$def.json"
@@ -95,23 +125,15 @@ install_kiro() {
 		return
 	fi
 
-	local tmp; tmp="$(mktemp)"
-	# Same self-healing dedup as Claude: drop any prior capture_session.sh entry (any path)
-	# then add exactly one, so re-installing from a moved location never stacks duplicates.
-	jq --arg cmd "$cmd" '
-		.hooks = (.hooks // {})
-		| .hooks.userPromptSubmit = ([
-			.hooks.userPromptSubmit[]?
-			| select( (.command // "") | contains("capture_session.sh") | not )
-		  ] + [ { "command": $cmd } ])
-	' "$file" > "$tmp" && mv "$tmp" "$file"
-	echo "✓ Kiro userPromptSubmit hook → $file (default agent: $def)"
+	drop_capture "$file"
+	shared_hook kiro
+	echo "✓ Kiro reports through the shared agent hook → $file (default agent: $def)"
 }
 
 check_kiro() {
 	local f state=missing
-	for f in "$HOME"/.kiro/agents/*.json; do [ "$(hook_state "$f")" = present ] && state=present; done
-	report kiro kiro-cli "$state" "$HOME/.kiro/agents/<default agent>.json"
+	for f in "$HOME"/.kiro/agents/*.json; do [ "$(hook_state "$f" agent-hook.sh)" = present ] && state=present; done
+	report kiro kiro-cli "$state" "$HOME/.kiro/agents/<default agent>.json" "shared agent hook"
 }
 
 # Codex reads ~/.codex/hooks.json (or $CODEX_HOME/hooks.json). It runs a new or changed hook

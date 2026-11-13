@@ -30,12 +30,19 @@ remove_hook_groups() {
 	' "$1" > "$tmp" && mv "$tmp" "$1"
 }
 
-# Strip our capture command from every Claude hook event (handles current
-# UserPromptSubmit and any legacy SessionStart entries), dropping empty groups.
+# shared_unhook <tool>: stop providing the shared agent hook for one CLI. If another plugin
+# that ships it is still loaded, the hook is handed over to that plugin's copy; otherwise
+# it is removed.
+shared_unhook() {
+	AGENT_HOOK_TOOLS="$1" bash "$HERE/uninstall-hooks.sh" --provider sessions-restore | sed 's/^/  /'
+}
+
+# Claude: the shared agent hook, plus any capture entry from older versions (UserPromptSubmit
+# or legacy SessionStart), dropping empty groups.
 uninstall_claude() {
 	local settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-	remove_hook_groups "$settings" || return 0
-	echo "✓ Removed Claude hook from $settings"
+	remove_hook_groups "$settings" && echo "✓ Removed Claude capture hook from $settings"
+	shared_unhook claude
 }
 
 uninstall_codex() {
@@ -50,9 +57,10 @@ uninstall_gemini() {
 	echo "✓ Removed Gemini hook from $file"
 }
 
-# Strip our capture command from every Kiro hook event (userPromptSubmit and legacy
-# agentSpawn) across all agent configs.
+# Kiro: the shared agent hook, plus our capture command from older versions on every Kiro
+# hook event (userPromptSubmit and legacy agentSpawn) across all agent configs.
 uninstall_kiro() {
+	shared_unhook kiro
 	local f
 	for f in "$HOME"/.kiro/agents/*.json; do
 		[ -f "$f" ] || continue

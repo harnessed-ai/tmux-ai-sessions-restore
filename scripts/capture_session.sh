@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # capture_session.sh <tool>
 #
+# Used for the CLIs that don't report through the shared agent hook (OpenCode, Codex,
+# Gemini). Claude Code and Kiro use scripts/agent-hook.sh instead, which writes
+# @agent_session_id; helpers.sh's AIR_PANE_FORMAT prefers that and falls back to ours.
+#
 # Invoked by the AI CLI's prompt hook (Claude UserPromptSubmit / Kiro userPromptSubmit / ...,
 # see install_hooks.sh) on every prompt. <tool> is a tool name from tools.tsv. Capturing on a prompt (rather than session start) means we only ever mark a
 # pane once the session actually has a transcript to resume.

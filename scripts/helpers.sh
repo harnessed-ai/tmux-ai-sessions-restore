@@ -131,9 +131,15 @@ air_is_oneshot() {
 
 # The per-pane snapshot rewrite_save.sh plans from (tab-separated, read by plan.awk).
 # awk splits on a literal tab without collapsing empty fields, so the order is free.
+#
+# A pane's marker (tool, session id, pid of the CLI that set it) comes from the shared
+# @agent_* state when it carries a session id (Claude Code and Kiro, written by the shared
+# scripts/agent-hook.sh), else from our own @ai_* marker (CLIs captured by
+# capture_session.sh: Codex, Gemini, OpenCode, and panes from before the switch).
+air_marker() { printf '#{?#{@agent_session_id},#{@agent_%s},#{@ai_%s}}' "$1" "$2"; }
 AIR_PANE_FORMAT="$(printf '%s\t' '#{pane_id}' '#{pane_pid}' '#{session_name}' '#{window_index}' \
-	'#{pane_index}' '#{pane_current_command}' '#{pane_current_path}' '#{@ai_tool}' \
-	'#{@ai_session_id}')#{@ai_pid}"
+	'#{pane_index}' '#{pane_current_command}' '#{pane_current_path}' "$(air_marker tool tool)" \
+	"$(air_marker session_id session_id)")$(air_marker pid pid)"
 
 # air_tool_cwds <plan-file> -> "pid<TAB>cwd" for every AI process the plan names (column 8).
 # The CLI's own cwd is where its conversation belongs; tmux's #{pane_current_path} can be

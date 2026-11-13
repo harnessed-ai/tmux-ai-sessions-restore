@@ -49,6 +49,10 @@ SHELL_P="$(T list-panes -t airtest -F '#{pane_id}' | head -1)"
 PA="$(T split-window -t airtest -c "$WORK" -P -F '#{pane_id}' "$FAKE/claude 600")"   # live marker
 PC="$(T split-window -t airtest -c "$WORK" -P -F '#{pane_id}' "$FAKE/claude 600")"   # marker of an exited CLI
 PB="$(T split-window -t airtest -c "$WORK" -P -F '#{pane_id}' "$FAKE/kiro-cli 600")" # kiro
+T select-layout -t airtest tiled >/dev/null   # keep room for the next splits
+PD="$(T split-window -t airtest -c "$WORK" -P -F '#{pane_id}' "$FAKE/claude 600")"   # shared agent hook marker
+T select-layout -t airtest tiled >/dev/null
+PE="$(T split-window -t airtest -c "$WORK" -P -F '#{pane_id}' "$FAKE/claude 600")"   # shared marker, CLI gone
 T select-layout -t airtest tiled >/dev/null
 
 for i in $(seq 1 50); do   # wait until tmux reports the renamed foreground processes
@@ -64,6 +68,12 @@ mark "$SHELL_P" claude stale-id 1                          # no claude in this p
 mark "$PA" claude cafe-claude "$(pid_of "$PA" claude)"
 mark "$PC" claude dead-beef 999999                         # the CLI that stamped it is gone
 mark "$PB" kiro beef-kiro "$(pid_of "$PB" kiro-cli)"
+# Claude/Kiro now report through the shared agent hook (@agent_*); it wins over an older
+# @ai_* marker left on the same pane, and its pid is liveness-checked the same way.
+agent() { T set -p -t "$1" @agent_tool "$2" \; set -p -t "$1" @agent_session_id "$3" \; set -p -t "$1" @agent_pid "$4"; }
+mark  "$PD" claude old-capture-id "$(pid_of "$PD" claude)"
+agent "$PD" claude agent-hook-id "$(pid_of "$PD" claude)"
+agent "$PE" claude gone-agent-id 999999
 T set -g @resurrect-dir "$RDIR"
 
 # A resurrect save file (11 tab fields/pane) for the live layout.
@@ -74,6 +84,8 @@ SAVE="$RDIR/tmux_resurrect_test.txt"
   saved "$PA" ":$FAKE/claude 600"
   saved "$PC" ":$FAKE/claude 600"
   saved "$PB" ":$FAKE/kiro-cli 600"
+  saved "$PD" ":$FAKE/claude 600"
+  saved "$PE" ":$FAKE/claude 600"
   saved "$SHELL_P" ':vim'
   mkline pane airtest 0 1 ':' 9 title ":$WORK" 0 vim ':vim'
 } > "$SAVE"
@@ -99,6 +111,9 @@ check "live marker resumed with the bare base command" "$(field11 "$SAVE" "$PA")
 check "marker of an exited CLI ignored: cold relaunch" "$(field11 "$SAVE" "$PC")" ":claude"
 check "kiro resumed (non-chat argv -> configured launcher)" "$(field11 "$SAVE" "$PB")" \
   ":kiro-cli chat --resume-id beef-kiro"
+check "shared agent-hook marker resumed (wins over an older @ai_* marker)" "$(field11 "$SAVE" "$PD")" \
+  ":claude --resume agent-hook-id"
+check "shared marker of an exited CLI ignored: cold relaunch" "$(field11 "$SAVE" "$PE")" ":claude"
 check "stale marker on a pane without the tool ignored" "$(field11 "$SAVE" "$SHELL_P")" ":vim"
 check "non-AI pane untouched" "$(awk -F'\t' '$6==9 {print $11}' "$SAVE")" ":vim"
 check "file mode preserved" "$(stat -f '%Lp' "$SAVE" 2>/dev/null || stat -c '%a' "$SAVE")" "644"

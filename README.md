@@ -10,8 +10,8 @@ AI CLIs relaunch **resumed**, in the same pane, where you left off.
 
 | CLI | Restored as | Capture hook (registered for you) | Notes |
 | --- | --- | --- | --- |
-| **Claude Code** | `claude --resume <id>` | `UserPromptSubmit` in `~/.claude/settings.json` | |
-| **Kiro CLI** | `kiro-cli chat --resume-id <id>` | `userPromptSubmit` in your default `~/.kiro/agents/*.json` | |
+| **Claude Code** | `claude --resume <id>` | the shared agent hook in `~/.claude/settings.json` | [shared](#claude-code-and-kiro-the-shared-agent-hook) |
+| **Kiro CLI** | `kiro-cli chat --resume-id <id>` | the shared agent hook in your default `~/.kiro/agents/*.json` | [shared](#claude-code-and-kiro-the-shared-agent-hook) |
 | **OpenCode** | `opencode --session <id>` | plugin file in `~/.config/opencode/plugins/` | OpenCode has no shell hooks |
 | **OpenAI Codex CLI** | `codex resume <id>` | `UserPromptSubmit` in `~/.codex/hooks.json` | **trust it once in `/hooks`** |
 | **Gemini CLI** | `gemini --resume <id>` | `BeforeAgent` in `~/.gemini/settings.json` | |
@@ -32,8 +32,8 @@ reboot ─▶ resurrect/continuum restore panes + cwd ─▶ this plugin relaunc
 flowchart TD
     subgraph cap["1 · Capture — live session"]
         direction TB
-        a1["You send a prompt<br/>in claude / kiro-cli"] --> a2["the tool's hook fires:<br/>capture_session.sh"]
-        a2 --> a3["stamp pane-options onto the pane:<br/>@ai_session_id · @ai_tool · @ai_pid · @ai_session_cwd<br/><i>ephemeral — tmux server memory</i>"]
+        a1["You send a prompt<br/>in claude / kiro-cli"] --> a2["the tool's hook fires:<br/>agent-hook.sh (Claude, Kiro) or capture_session.sh"]
+        a2 --> a3["stamp pane-options onto the pane:<br/>@agent_session_id · @agent_tool · @agent_pid (shared hook)<br/>or @ai_session_id · @ai_tool · @ai_pid<br/><i>ephemeral — tmux server memory</i>"]
     end
     subgraph sav["2 · Save — continuum, or prefix + Ctrl-s"]
         direction TB
@@ -46,11 +46,13 @@ flowchart TD
     cap --> sav --> res
 ```
 
-1. **Capture** — each tool's own prompt hook (Claude / Codex `UserPromptSubmit`, Kiro
-   `userPromptSubmit`, Gemini `BeforeAgent`, an OpenCode plugin) runs *inside the pane*, so
+1. **Capture** — each tool's own prompt hook (Codex `UserPromptSubmit`, Gemini
+   `BeforeAgent`, an OpenCode plugin; for Claude Code and Kiro, the
+   [shared agent hook](#claude-code-and-kiro-the-shared-agent-hook)) runs *inside the pane*, so
    it knows `$TMUX_PANE`. On every prompt it
    stamps the live session id onto that pane as tmux pane-options (`@ai_session_id`,
-   `@ai_tool`), plus `@ai_pid` — the pid of the CLI process that fired the hook. Capturing on
+   `@ai_tool`; `@agent_session_id`, `@agent_tool` from the shared hook), plus the pid of the
+   CLI process that fired the hook (`@ai_pid` / `@agent_pid`). Capturing on
    a prompt (not session start) means a pane is only marked once its session actually has a
    transcript to resume, and after `/clear` or `/resume` the next prompt re-marks the pane
    with the new conversation. One-shot runs inside the pane (`claude -p`, `--bg`,
@@ -98,7 +100,7 @@ liveness check is what keeps a pane from coming back as an *older* conversation:
 flowchart TD
     start["For each live pane<br/>(one tmux + ps snapshot)"] --> q0{"an AI CLI running<br/>in the pane's subtree?"}
     q0 -->|"no (shell, editor, …)"| skip["leave the pane alone"]
-    q0 -->|yes| q1{"marker whose @ai_pid<br/>is that running CLI?"}
+    q0 -->|yes| q1{"marker whose pid<br/>is that running CLI?"}
     q1 -->|yes| build["resume that id"]
     q1 -->|"no (none yet, or left by<br/>a CLI that has exited)"| q3{"--resume &lt;id&gt; on the<br/>CLI's command line?"}
     q3 -->|"yes (restored, not re-prompted)"| build
@@ -182,9 +184,9 @@ Then `prefix + I` to install.
 Unlike resurrect (which is pure tmux), this plugin needs a hook **inside each AI tool** to
 learn a pane's session id. On first load it registers them for you (idempotent):
 
-- `~/.claude/settings.json` — a `UserPromptSubmit` hook
-- your default Kiro agent `~/.kiro/agents/kiro_default.json` — a `userPromptSubmit` hook
-  (materialised from the built-in default agent if you don't already have one on disk)
+- `~/.claude/settings.json` — the shared agent hook, one entry per lifecycle event (see below)
+- your default Kiro agent `~/.kiro/agents/kiro_default.json` — the shared agent hook
+  (the agent is materialised from the built-in default if you don't already have one on disk)
 - `~/.config/opencode/plugins/tmux-ai-sessions-restore.js` — OpenCode has no shell hooks, so
   this small plugin (a copy of `scripts/opencode_plugin.js`) runs the same capture script on
   each prompt; subagent sessions are skipped
@@ -195,7 +197,28 @@ learn a pane's session id. On first load it registers them for you (idempotent):
   (it prints `{}`, since Gemini reads a hook's stdout as JSON)
 
 A CLI that isn't installed is skipped; when a later version of the plugin adds a CLI, its
-hook is registered on the next tmux start. `bash scripts/install_hooks.sh --check` (also
+hook is registered on the next tmux start.
+
+#### Claude Code and Kiro: the shared agent hook
+
+Claude Code and Kiro report through `scripts/agent-hook.sh`, a hook shared by the
+harnessed-ai tmux plugins: each one that uses it ships an identical copy. It writes
+`@agent_*` pane options (state, name, session id, pid…), and this plugin reads
+`@agent_session_id`, which is recorded on your first prompt (or at once for a resumed
+session), so a pane is still only marked once there is a conversation to resume. With
+several such plugins installed, each agent event runs **one** hook instead of one per
+plugin:
+
+- it is registered once per event, and a copy is never replaced by an older one;
+- each loaded plugin advertises its copy in `@agent-hook-provider-<plugin>`, so
+  uninstalling one hands the hook over to another that is still loaded instead of
+  removing it;
+- an up-to-date config is left untouched, so reloading tmux doesn't rewrite it.
+
+Upgrading from an older version: the first tmux start after the update re-runs the
+installer once, replacing the old `capture_session.sh` entries for Claude and Kiro.
+Panes captured before the switch keep working: when a pane has no shared session id,
+its older `@ai_*` marker is used. `bash scripts/install_hooks.sh --check` (also
 part of `scripts/diagnose.sh`) shows what is registered where.
 
 Each hook only stamps a tmux pane-option and does nothing else. To manage it yourself
@@ -240,7 +263,8 @@ set -g @ai-restore-cold-fallback 'on'   # opt in to the cold-launch fallback
 claude            # or: kiro-cli chat / opencode / codex / gemini
 
 # 2. in another pane, confirm the live session was captured onto the pane
-tmux show -p -t <that-pane> -v @ai_session_id      # prints the session id
+tmux show -p -t <that-pane> -v @agent_session_id   # Claude / Kiro: prints the session id
+tmux show -p -t <that-pane> -v @ai_session_id      # OpenCode / Codex / Gemini
 
 # 3. save, then check resurrect baked in a resume command
 tmux run-shell ~/.tmux/plugins/tmux-resurrect/scripts/save.sh
@@ -267,12 +291,12 @@ bash ~/.config/tmux/plugins/tmux-ai-sessions-restore/scripts/diagnose.sh   # or 
 ```mermaid
 flowchart TB
     subgraph cfg["Config · disk · written once at install"]
-        c1["~/.claude/settings.json<br/>UserPromptSubmit hook"]
-        c2["~/.kiro/agents/&lt;default&gt;.json<br/>userPromptSubmit hook"]
+        c1["~/.claude/settings.json<br/>shared agent hook"]
+        c2["~/.kiro/agents/&lt;default&gt;.json<br/>shared agent hook"]
         c3["~/.codex/hooks.json · ~/.gemini/settings.json<br/>~/.config/opencode/plugins/…js"]
     end
     subgraph eph["Ephemeral · tmux server memory · gone when the pane closes"]
-        e1["pane-options:<br/>@ai_session_id<br/>@ai_tool<br/>@ai_pid<br/>@ai_session_cwd"]
+        e1["pane-options:<br/>@agent_session_id / @ai_session_id<br/>@agent_tool / @ai_tool<br/>@agent_pid / @ai_pid"]
     end
     subgraph dur["Durable · disk · the ONLY thing we persist"]
         d1["resurrect save file 'last'<br/>field 11 = restore command<br/>claude --resume &lt;id&gt;"]
@@ -363,6 +387,7 @@ bash tests/plan_test.sh        # per-pane decisions (stubbed ps / tmux input)
 bash tests/rewrite_test.sh     # save-file rewrite + resurrect bug repairs
 bash tests/entrypoint_test.sh  # hook wiring and migration (private tmux server)
 bash tests/roundtrip_test.sh   # rewrite_save.sh on real panes (private tmux server)
+bash tests/agent_hook_test.sh  # Claude/Kiro on the shared hook: install, resume, uninstall
 bash tests/adversarial_restore_test.sh   # full save → kill-server → restore, twice
 ```
 
