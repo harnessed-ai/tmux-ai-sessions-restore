@@ -8,7 +8,7 @@ windows, panes and working directories. But an AI CLI running in a pane comes ba
 **cold** — a brand-new, empty conversation. This plugin is the missing layer: it makes
 `claude` and `kiro-cli chat` relaunch **resumed**, in the same pane, where you left off.
 
-Supports **Claude Code** (`claude`) and **Kiro CLI** (`kiro-cli chat`).
+Supports **Claude Code** (`claude`), **Kiro CLI** (`kiro-cli chat`) and **OpenCode** (`opencode`).
 
 ![tmux-ai-sessions-restore demo](./demo.gif)
 
@@ -172,6 +172,9 @@ learn a pane's session id. On first load it registers them for you (idempotent):
 - `~/.claude/settings.json` — a `UserPromptSubmit` hook
 - your default Kiro agent `~/.kiro/agents/kiro_default.json` — a `userPromptSubmit` hook
   (materialised from the built-in default agent if you don't already have one on disk)
+- `~/.config/opencode/plugins/tmux-ai-sessions-restore.js` — OpenCode has no shell hooks, so
+  this small plugin (a copy of `scripts/opencode_plugin.js`) runs the same capture script on
+  each prompt; subagent sessions are skipped
 
 Each hook only stamps a tmux pane-option and does nothing else. To manage it yourself
 instead of letting the plugin do it:
@@ -195,6 +198,7 @@ bash "$DIR/scripts/uninstall_hooks.sh"   # remove them anytime
 | `@ai-restore-enabled-tools` | every tool in `scripts/tools.tsv` | Which tools to restore (space-separated tool names). |
 | `@ai-restore-claude-command` | `claude` | Launch command every restored Claude pane starts with (`<command> --resume <id>`). The running CLI's own flags are not carried over, so put any you always want here, e.g. `claude --dangerously-skip-permissions`. |
 | `@ai-restore-kiro-command` | `kiro-cli chat` | Launch command for Kiro, likewise (`<command> --resume-id <id>`). |
+| `@ai-restore-opencode-command` | `opencode` | Launch command for OpenCode (`<command> --session <id>`). |
 | `@ai-restore-cold-fallback` | `off` | `on` appends `\|\| <cold launch>`, so an expired/invalid id starts a new, empty session instead of erroring. Off by default: a failed resume leaves Claude's error at a shell prompt rather than an empty session you might mistake for the real one. |
 | `@ai-restore-auto-install` | `on` | Auto-register capture hooks on plugin load. |
 
@@ -279,7 +283,10 @@ regenerates every cycle and never needs to survive a reboot itself.
   an already-resumed pane stays resumable across further reboots *even with zero interaction
   since restore*. (Only a genuinely cold-started or never-used session lacks an id to
   recover.) So continuum recording "current reality" no longer downgrades untouched panes.
-- Not handled: other AI CLIs, remote/SSH tmux, nested tmux.
+- A pane whose only AI process is a one-shot or server run (`claude -p …`, `opencode run …`,
+  `opencode serve`) restores as a plain shell: there is no interactive session to resume.
+- `opencode attach <url>` panes aren't resumed: the session lives in the server they attach to.
+- Not handled: remote/SSH tmux, nested tmux.
 
 ## Troubleshooting
 

@@ -76,4 +76,24 @@ summary="$(awk -v tools="$ROOT/scripts/tools.tsv" -v plan="$W/plan" -v cwds="$W/
 check "--explain summary" "$summary" \
     "3 AI pane(s) rewritten, 1 skipped (pane changed), 2 shifted line(s) repaired, 2 stray line(s) dropped, 1 misattributed AI command(s) cleared"
 
+# A pane that changed during the save falls back to the cold launch of the tool its recorded
+# command names (the tool whose word comes first) — not always Claude.
+{
+  line s 3 1 901 zsh /a opencode 911 marker ses_1 "opencode --session ses_1" ""
+  line s 3 2 902 zsh /b kiro     922 argv   k-2   "kiro-cli chat --resume-id k-2" ""
+  line s 3 3 903 zsh /c claude   933 marker U3    "claude --resume U3" ""
+} > "$W/plan2"
+{
+  line pane s 3 1 ':' 1 host ':/a' 0 opencode ':opencode -s ses_0 --model x/y'
+  line pane s 3 2 ':' 2 host ':/b' 0 kiro-cli ':kiro-cli chat --agent claude'
+  line pane s 3 3 ':' 3 host ':/c' 0 claude ':/usr/local/bin/claude --resume U0 --add-dir /x/kiro-cli'
+} > "$W/save2"
+: > "$W/cwds2"
+awk -v tools="$ROOT/scripts/tools.tsv" -v plan="$W/plan2" -v cwds="$W/cwds2" -v bases="opencode=opencode --agent plan" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/rewrite.awk" "$W/plan2" "$W/cwds2" "$W/save2" > "$W/out2"
+f11() { awk -F'\t' -v p="$1" '$1=="pane" && $6==p { print $11 }' "$W/out2"; }
+check "cold launch of the recorded tool: opencode (with its override)" "$(f11 1)" ":opencode --agent plan"
+check "cold launch of the recorded tool: kiro, though claude appears later" "$(f11 2)" ":kiro-cli chat"
+check "cold launch of the recorded tool: claude, though kiro-cli appears later" "$(f11 3)" ":claude"
+
 if [ "$fail" -eq 0 ]; then echo "PASS"; else echo "FAILURES"; exit 1; fi

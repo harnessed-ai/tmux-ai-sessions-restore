@@ -31,6 +31,22 @@ function air_is_cli(t, c, a,    p, n, A, i) {
     return 0
 }
 
+# air_is_oneshot(t, args): is this command line a non-interactive run of tool t (its oneshot
+# column)? A flag counts anywhere; a bare word only as the subcommand, the word right after
+# the program (after the script, for node/bun). Same rule as air_is_oneshot in helpers.sh.
+function air_is_oneshot(t, a,    n, A, i, F, k, j, sc) {
+    if (ONESHOT[t] == "") return 0
+    n = split(a, A, " "); i = 2
+    if (basename(A[1]) ~ /^(node|nodejs|bun)$/) { while (i <= n && A[i] ~ /^-/) i++; i++ }
+    sc = (i <= n) ? A[i] : ""
+    k = split(ONESHOT[t], F, ",")
+    for (j = 1; j <= k; j++) {
+        if (F[j] ~ /^-/) { for (i = 2; i <= n; i++) if (A[i] == F[j]) return 1 }
+        else if (F[j] == sc) return 1
+    }
+    return 0
+}
+
 BEGIN {
     if (tools == "") { print "tools.awk: -v tools=<path to tools.tsv> is required" > "/dev/stderr"; exit 2 }
     NT = 0

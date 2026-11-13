@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install_hooks.sh [--check] — register the per-tool prompt hooks that let
+# install_hooks.sh [--check] [tool...] — register the per-tool prompt hooks that let
 # tmux-ai-sessions-restore learn which conversation each pane holds.
 #
 # We hook the prompt event (Claude UserPromptSubmit / Kiro userPromptSubmit / ...) rather
@@ -18,7 +18,8 @@ CAP="$HERE/capture_session.sh"
 . "$HERE/helpers.sh"
 
 mode=install
-[ "${1:-}" = "--check" ] && mode=check
+[ "${1:-}" = "--check" ] && { mode=check; shift; }
+tools="$*"   # optional tool names (default: every tool in tools.tsv)
 [ "$mode" = check ] || command -v jq >/dev/null 2>&1 || { echo "✗ jq is required (brew install jq)"; exit 1; }
 
 # hook_state <file>: "present" if <file> mentions our capture script, else "missing".
@@ -107,7 +108,35 @@ check_kiro() {
 	report kiro kiro-cli "$state" "$HOME/.kiro/agents/<default agent>.json"
 }
 
-for tool in $(air_tools); do
+# OpenCode loads plugin files from <config dir>/plugins/ (OPENCODE_CONFIG_DIR, when set, is
+# an extra config dir it also loads).
+opencode_plugin_file() {
+	printf '%s/plugins/tmux-ai-sessions-restore.js' "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
+}
+
+# OpenCode has no shell hooks: install a plugin (scripts/opencode_plugin.js, with the path of
+# this checkout's capture_session.sh filled in) that runs capture_session.sh on each prompt.
+install_opencode() {
+	if ! command -v opencode >/dev/null 2>&1; then
+		echo "• opencode not found — skipping OpenCode plugin"
+		return
+	fi
+	local file cap tmp
+	file="$(opencode_plugin_file)"
+	cap="$(jq -rn --arg p "$CAP" '$p | tojson | .[1:-1]')"   # JS-string-escaped path
+	mkdir -p "$(dirname "$file")"
+	tmp="$(mktemp)"
+	CAP_ESC="$cap" awk '{ i = index($0, "__CAPTURE__"); if (i) $0 = substr($0, 1, i - 1) ENVIRON["CAP_ESC"] substr($0, i + 11); print }' \
+		"$HERE/opencode_plugin.js" > "$tmp" && mv "$tmp" "$file"
+	echo "✓ OpenCode capture plugin → $file"
+}
+
+check_opencode() {
+	local file; file="$(opencode_plugin_file)"
+	report opencode opencode "$(hook_state "$file")" "$file"
+}
+
+for tool in ${tools:-$(air_tools)}; do
 	if declare -F "${mode}_$tool" >/dev/null; then "${mode}_$tool"
 	else echo "• $tool: no ${mode}_$tool in install_hooks.sh — skipping"; fi
 done

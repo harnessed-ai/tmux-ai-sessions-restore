@@ -57,7 +57,9 @@ FILENAME == psa {
 }
 FILENAME == panes { plan_pane(); next }
 
-function is_tool(pid, t) { return (pid in comm) && air_is_cli(t, comm[pid], args[pid]) }
+# A one-shot or server run (`claude -p`, `opencode run`/`serve`) is not the pane's CLI: there
+# is no interactive session to bring back, so it must not turn into one on restore.
+function is_tool(pid, t) { return (pid in comm) && air_is_cli(t, comm[pid], args[pid]) && !air_is_oneshot(t, args[pid]) }
 function tool_enabled(t,    i) { for (i = 1; i <= ntools; i++) if (TOOLS[i] == t) return 1; return 0 }
 # ids end up inside a shell command that restore types into the pane: allow nothing else
 function safe_id(id) { return id ~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ }

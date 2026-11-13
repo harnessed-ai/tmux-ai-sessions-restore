@@ -1,12 +1,13 @@
 /*
- * fake_ai_cli.c — stand-in for `claude` / `kiro-cli chat` used by the adversarial tests.
+ * fake_ai_cli.c — stand-in for the AI CLIs (`claude`, `kiro-cli chat`, `opencode`) used by the
+ * adversarial tests.
  *
- * Compiled into binaries literally named `claude` and `kiro-cli`, so the process name (comm),
+ * Compiled into binaries literally named after each CLI, so the process name (comm),
  * argv and process tree look like the real CLIs to ps, tmux and tmux-resurrect. It emulates
  * only what the restore layer depends on:
  *
  *   - session ids: a fresh launch gets a new id; `--resume <id>` / `-r <id>` / `--resume=<id>`
- *     (claude) or `chat --resume-id <id>` (kiro) resumes that id without forking, like the
+ *     (claude), `chat --resume-id <id>` (kiro) or `--session <id>` / `-s <id>` (opencode) resumes that id without forking, like the
  *     real CLIs; `--session-id <id>` pins one; `-c` / `--continue` (kiro: `-r`) picks the
  *     newest transcript in the cwd.
  *   - resume is scoped to the cwd: transcripts live at $FAKE_AI_HOME/<tool>/<cwd-slug>/<id>,
@@ -35,9 +36,14 @@
 static char sid[128];
 static char cwd[PATH_MAX];
 static char argvline[8192];
+enum tool { T_CLAUDE, T_KIRO, T_OPENCODE };
+static enum tool tool;
 static int is_kiro;
 
-static const char *tool_name(void) { return is_kiro ? "kiro" : "claude"; }
+static const char *tool_name(void) {
+    static const char *names[] = {"claude", "kiro", "opencode"};
+    return names[tool];
+}
 
 static void new_id(char *out) {
     unsigned char b[16];
@@ -172,7 +178,8 @@ int main(int argc, char **argv) {
     char line[4096];
 
     base = base ? base + 1 : argv[0];
-    is_kiro = !strcmp(base, "kiro-cli");
+    tool = !strcmp(base, "kiro-cli") ? T_KIRO : !strcmp(base, "opencode") ? T_OPENCODE : T_CLAUDE;
+    is_kiro = tool == T_KIRO;
     if (!getcwd(cwd, sizeof cwd)) strcpy(cwd, "?");
     argvline[0] = 0;
     for (int k = 0; k < argc; k++) {
@@ -187,8 +194,20 @@ int main(int argc, char **argv) {
         }
         i++;
     }
+    if (tool == T_OPENCODE && i < argc && !strcmp(argv[i], "run")) { /* one-shot, like -p */
+        print_mode = 1;
+        i++;
+    }
     for (; i < argc; i++) {
         const char *a = argv[i];
+        if (tool == T_OPENCODE) {
+            if ((!strcmp(a, "--session") || !strcmp(a, "-s")) && i + 1 < argc) resume = argv[++i];
+            else if (!strncmp(a, "--session=", 10)) resume = a + 10;
+            else if (!strcmp(a, "-c") || !strcmp(a, "--continue")) cont = 1;
+            else if (a[0] == '-') { if (takes_value(a) && i + 1 < argc) i++; }
+            else { positional = a; npos++; }
+            continue;
+        }
         if (!is_kiro && (!strcmp(a, "--resume") || !strcmp(a, "-r"))) {
             if (i + 1 < argc && argv[i + 1][0] != '-') resume = argv[++i];
             else { fprintf(stderr, "fake claude: interactive picker not emulated\n"); return 3; }

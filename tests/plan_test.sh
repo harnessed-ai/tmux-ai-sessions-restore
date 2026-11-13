@@ -181,4 +181,59 @@ check "table-only tool: subcommand id from argv" "$(col 9.1 7 "$W/plan3"):$(col 
 check "table-only tool: node script matched, live marker wins" "$(col 9.2 9 "$W/plan3"):$(col 9.2 11 "$W/plan3")" "marker:zedcli --tui go z-77"
 check "table-only tool: node running another script is not it" "$(col 9.3 7 "$W/plan3")" ""
 
+# opencode, and one-shot / server runs (the oneshot column) that are not the pane's CLI.
+cat > "$W/psc4" <<'EOF'
+ 1000     1 -zsh
+ 1001  1000 opencode
+ 2000     1 -zsh
+ 2001  2000 opencode
+ 3000     1 -zsh
+ 3001  3000 opencode
+ 4000     1 -zsh
+ 4001  4000 opencode
+ 5000     1 -zsh
+ 5001  5000 opencode
+ 6000     1 -zsh
+ 6001  6000 claude
+ 7000     1 -zsh
+ 7001  7000 opencode
+ 7002  7001 opencode
+EOF
+cat > "$W/psa4" <<'EOF'
+ 1000 -zsh
+ 1001 opencode
+ 2000 -zsh
+ 2001 opencode -s ses_def --model anthropic/x
+ 3000 -zsh
+ 3001 opencode --session=ses_ghi
+ 4000 -zsh
+ 4001 opencode serve --port 4096
+ 5000 -zsh
+ 5001 opencode --prompt run tests
+ 6000 -zsh
+ 6001 claude -p summarize
+ 7000 -zsh
+ 7001 opencode -s ses_out
+ 7002 opencode run hello
+EOF
+{
+  echo "%1${t}1000${t}o${t}1${t}1${t}opencode${t}/p${t}opencode${t}ses_abc${t}1001"
+  echo "%2${t}2000${t}o${t}1${t}2${t}opencode${t}/p${t}${t}${t}"
+  echo "%3${t}3000${t}o${t}1${t}3${t}opencode${t}/p${t}${t}${t}"
+  echo "%4${t}4000${t}o${t}1${t}4${t}opencode${t}/p${t}${t}${t}"
+  echo "%5${t}5000${t}o${t}2${t}1${t}opencode${t}/p${t}${t}${t}"
+  echo "%6${t}6000${t}o${t}2${t}2${t}claude${t}/p${t}${t}${t}"
+  echo "%7${t}7000${t}o${t}2${t}3${t}opencode${t}/p${t}${t}${t}"
+} > "$W/panes4"
+awk -v tools="$TOOLS" -v psc="$W/psc4" -v psa="$W/psa4" -v panes="$W/panes4" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc4" "$W/psa4" "$W/panes4" > "$W/plan4"
+check "opencode: live marker" "$(col 1.1 9 "$W/plan4"):$(col 1.1 11 "$W/plan4")" "marker:opencode --session ses_abc"
+check "opencode: -s <id> on the command line, flags dropped" "$(col 1.2 11 "$W/plan4")" "opencode --session ses_def"
+check "opencode: --session=<id>" "$(col 1.3 10 "$W/plan4")" "ses_ghi"
+check "opencode serve is not an interactive CLI" "$(col 1.4 7 "$W/plan4")$(col 1.4 11 "$W/plan4")" ""
+check "opencode --prompt \"run tests\" is interactive (run only counts as the subcommand)" \
+    "$(col 2.1 7 "$W/plan4"):$(col 2.1 11 "$W/plan4")" "opencode:opencode"
+check "a pane running only claude -p restores as a plain shell" "$(col 2.2 7 "$W/plan4")$(col 2.2 11 "$W/plan4")" ""
+check "opencode run inside an opencode pane: the TUI is tracked" "$(col 2.3 8 "$W/plan4"):$(col 2.3 10 "$W/plan4")" "7001:ses_out"
+
 if [ "$fail" -eq 0 ]; then echo "PASS"; else echo "FAILURES"; exit 1; fi

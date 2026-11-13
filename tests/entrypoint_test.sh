@@ -51,6 +51,7 @@ layout="$(T show -gv @resurrect-hook-post-save-layout 2>/dev/null)"
 all="$(T show -gv @resurrect-hook-post-save-all 2>/dev/null)"
 contains '~claude'   "$procs"; assert "@resurrect-processes has ~claude"   $?
 contains '~kiro-cli' "$procs"; assert "@resurrect-processes has ~kiro-cli" $?
+contains '~opencode' "$procs"; assert "@resurrect-processes has ~opencode" $?
 [ "$layout" = "$HOOK" ]; assert "post-save-layout hook wired" $?
 [ -z "$all" ]; assert "nothing added to post-save-all" $?
 [ "$(count '~claude' "$procs")" = 1 ]; assert "no duplicate ~claude after 2 loads" $?

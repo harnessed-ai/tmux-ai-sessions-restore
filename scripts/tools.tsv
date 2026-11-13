@@ -22,3 +22,4 @@
 # tool	regex	base	resume	id_flags	pin_flags	id_fmt	match	oneshot
 claude	^claude$	claude	--resume {id}	--resume,-r	--session-id	uuid	claude	-p,--print,--bg,--background,--no-interactive
 kiro	^kiro-cli(-chat)?$	kiro-cli chat	--resume-id {id}	--resume-id	-	safe	kiro-cli	-p,--print,--bg,--background,--no-interactive
+opencode	^opencode$	opencode	--session {id}	--session,-s	-	safe	opencode	run,serve,web,acp

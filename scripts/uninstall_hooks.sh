@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# uninstall_hooks.sh — remove the capture hooks installed by install_hooks.sh.
+# uninstall_hooks.sh [tool...] — remove the capture hooks installed by install_hooks.sh.
 # Matches our own capture_session.sh command, so unrelated hooks are left untouched.
 
 set -euo pipefail
@@ -13,6 +13,7 @@ command -v jq >/dev/null 2>&1 || { echo "✗ jq is required"; exit 1; }
 # hook wherever the plugin was installed from (~/.tmux/plugins or ~/.config/tmux/plugins).
 # Path-matching would leave a stale hook behind if the plugin had since moved.
 MARKER="capture_session.sh"
+tools="$*"   # optional tool names (default: every tool in tools.tsv)
 
 # Strip our capture command from every Claude hook event (handles current
 # UserPromptSubmit and any legacy SessionStart entries), dropping empty groups.
@@ -48,7 +49,18 @@ uninstall_kiro() {
 	done
 }
 
-for tool in $(air_tools); do
+# Remove our OpenCode plugin file (only if it is ours), from plugins/ and the older plugin/.
+uninstall_opencode() {
+	local d f
+	d="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
+	for f in "$d/plugins/tmux-ai-sessions-restore.js" "$d/plugin/tmux-ai-sessions-restore.js"; do
+		[ -f "$f" ] && grep -q "$MARKER" "$f" 2>/dev/null || continue
+		rm -f "$f"
+		echo "✓ Removed OpenCode plugin $f"
+	done
+}
+
+for tool in ${tools:-$(air_tools)}; do
 	if declare -F "uninstall_$tool" >/dev/null; then "uninstall_$tool"
 	else echo "• $tool: no uninstall_$tool in uninstall_hooks.sh — skipping"; fi
 done
