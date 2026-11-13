@@ -192,7 +192,7 @@ bash "$DIR/scripts/uninstall_hooks.sh"   # remove them anytime
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `@ai-restore-enabled-tools` | `claude kiro` | Which tools to restore. |
+| `@ai-restore-enabled-tools` | every tool in `scripts/tools.tsv` | Which tools to restore (space-separated tool names). |
 | `@ai-restore-claude-command` | `claude` | Launch command every restored Claude pane starts with (`<command> --resume <id>`). The running CLI's own flags are not carried over, so put any you always want here, e.g. `claude --dangerously-skip-permissions`. |
 | `@ai-restore-kiro-command` | `kiro-cli chat` | Launch command for Kiro, likewise (`<command> --resume-id <id>`). |
 | `@ai-restore-cold-fallback` | `off` | `on` appends `\|\| <cold launch>`, so an expired/invalid id starts a new, empty session instead of erroring. Off by default: a failed resume leaves Claude's error at a shell prompt rather than an empty session you might mistake for the real one. |
@@ -309,6 +309,20 @@ windows or tabs each launching tmux at login can trip that check — and then it
 for the whole life of that server, so `last` keeps pointing at whatever an earlier server
 saved. Restart tmux from a single terminal, or save by hand (`prefix + Ctrl-s`) before
 killing the server.
+
+## Adding another CLI
+
+Everything the save/restore path knows about a CLI is one row of
+[`scripts/tools.tsv`](scripts/tools.tsv): the process-name pattern, the launch command, the
+resume syntax (`--resume {id}`), where a session id appears on a running CLI's command line,
+the id format, the word `@resurrect-processes` matches, and which flags mark a one-shot run.
+`plan.awk`, `rewrite.awk`, the TPM entrypoint and `capture_session.sh` all read it; nothing else
+names a tool. Capture is the one inherently per-tool part: add an `install_<tool>` /
+`check_<tool>` pair to `scripts/install_hooks.sh` and an `uninstall_<tool>` to
+`scripts/uninstall_hooks.sh` that register a prompt hook running
+`capture_session.sh <tool>` with `{"session_id": …, "cwd": …}` on stdin. The tool picks up
+`@ai-restore-<tool>-command` automatically, and existing installs register its hook on the
+next tmux start.
 
 ## Tests
 

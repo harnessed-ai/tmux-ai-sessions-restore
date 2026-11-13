@@ -33,25 +33,100 @@ air_resurrect_dir() {
 	fi
 }
 
+# tools.tsv: the per-tool table (process pattern, launch/resume syntax, ...). See its header.
+AIR_TOOLS_TSV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools.tsv"
+
+# air_tools -> every tool name in tools.tsv, space-separated, in table order.
+air_tools() {
+	awk -F'\t' '!/^[ \t]*(#|$)/ && NF >= 9 { printf "%s%s", (n++ ? " " : ""), $1 }' "$AIR_TOOLS_TSV"
+}
+
+# air_tool_field <tool> <column> -> one cell of the tool's row ("-" prints as empty);
+# fails for an unknown tool or column. Columns: regex base resume id_flags pin_flags id_fmt
+# match oneshot.
+air_tool_field() {
+	local c
+	case "$2" in
+		regex) c=2 ;; base) c=3 ;; resume) c=4 ;; id_flags) c=5 ;; pin_flags) c=6 ;;
+		id_fmt) c=7 ;; match) c=8 ;; oneshot) c=9 ;; *) return 1 ;;
+	esac
+	awk -F'\t' -v t="$1" -v c="$c" '
+		!/^[ \t]*(#|$)/ && NF >= 9 && $1 == t { print ($c == "-" ? "" : $c); found = 1; exit }
+		END { exit !found }' "$AIR_TOOLS_TSV"
+}
+
+# air_enabled_tools -> @ai-restore-enabled-tools, defaulting to every tool in the table.
+air_enabled_tools() {
+	air_tmux_get '@ai-restore-enabled-tools' "$(air_tools)"
+}
+
 # air_tool_enabled <tool> -> 0 if the tool is in @ai-restore-enabled-tools.
 air_tool_enabled() {
-	local tool="$1" enabled
-	enabled="$(air_tmux_get '@ai-restore-enabled-tools' 'claude kiro')"
-	case " $enabled " in
-		*" $tool "*) return 0 ;;
+	case " $(air_enabled_tools) " in
+		*" $1 "*) return 0 ;;
 		*) return 1 ;;
 	esac
+}
+
+# air_tool_bases -> the @ai-restore-<tool>-command overrides, as tools.awk's `bases` var
+# ("tool=command" entries separated by \034).
+air_tool_bases() {
+	local t v out=''
+	for t in $(air_tools); do
+		v="$(tmux show-option -gqv "@ai-restore-$t-command" 2>/dev/null)"
+		[ -n "$v" ] && out="$out$t=$v"$'\034'
+	done
+	printf '%s' "$out"
 }
 
 # air_tool_regex <tool> -> the process-name pattern (matched against comm and argv[0]
 # basenames) that identifies the tool's CLI process. kiro deliberately does not match its
 # "kiro-cli-term" shell-integration pty wrapper.
 air_tool_regex() {
-	case "$1" in
-		claude) printf '%s' '^claude$' ;;
-		kiro)   printf '%s' '^kiro-cli(-chat)?$' ;;
-		*) return 1 ;;
+	air_tool_field "$1" regex
+}
+
+# air_is_cli <tool> <comm> <args> -> 0 if the process is the tool's CLI: the basename of comm
+# or of argv[0], or for node/bun the script (first non-option argument), matches the tool's
+# regex. Same rule as air_is_cli in tools.awk.
+air_is_cli() {
+	local re name w
+	re="$(air_tool_regex "$1")" || return 1
+	name="${2##*/}"; [[ "${name#-}" =~ $re ]] && return 0
+	set -f; set -- $3; set +f
+	name="${1##*/}"; name="${name#-}"
+	[[ "$name" =~ $re ]] && return 0
+	case "$name" in node|nodejs|bun) ;; *) return 1 ;; esac
+	shift
+	for w in "$@"; do
+		case "$w" in -*) continue ;; esac
+		[[ "${w##*/}" =~ $re ]]; return
+	done
+	return 1
+}
+
+# air_is_oneshot <tool> <args> -> 0 if the command line is a non-interactive run, per the
+# tool's oneshot column: a flag anywhere, or a bare word as the subcommand — the word right
+# after the program (after the script, for node/bun). Only that position counts, since ps
+# flattens quoting: `opencode --prompt "run tests"` must not read as `opencode run`.
+air_is_oneshot() {
+	local list f
+	list="$(air_tool_field "$1" oneshot)" || return 1
+	[ -n "$list" ] || return 1
+	local all=" $2 "
+	set -f; set -- $2; set +f
+	case "${1##*/}" in
+		node|nodejs|bun) shift; while [ $# -gt 0 ] && [ "${1#-}" != "$1" ]; do shift; done ;;
 	esac
+	[ $# -gt 0 ] && shift
+	local sub="${1:-}" IFS=,
+	for f in $list; do
+		case "$f" in
+			-*) case "$all" in *" $f "*) return 0 ;; esac ;;
+			*)  [ "$f" = "$sub" ] && return 0 ;;
+		esac
+	done
+	return 1
 }
 
 # The per-pane snapshot rewrite_save.sh plans from (tab-separated, read by plan.awk).

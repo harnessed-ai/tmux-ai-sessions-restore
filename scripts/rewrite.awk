@@ -2,8 +2,8 @@
 # rewrite_save.sh.
 #
 # Inputs (file names passed as -v vars): plan (plan.awk output), cwds ("pid<TAB>cwd"), and
-# the save file itself. Vars: claude_base, kiro_base (as for plan.awk). With -v explain=1 it
-# prints a per-pane report instead.
+# the save file itself. Vars: tools, bases (see tools.awk, which must be loaded first:
+# -f tools.awk -f rewrite.awk). With -v explain=1 it prints a per-pane report instead.
 #
 # resurrect pane-line format (tab-separated, 11 fields):
 #   pane | session(2) | window(3) | window_active(4) | :window_flags(5) | pane_index(6) |
@@ -29,8 +29,8 @@
 
 BEGIN {
     FS = "\t"; OFS = "\t"
-    if (claude_base == "") claude_base = "claude"
-    if (kiro_base == "") kiro_base = "kiro-cli chat"
+    for (i = 1; i <= NT; i++) words = words (i > 1 ? "|" : "") MATCH[ALL[i]]
+    AI_RE = "(^|[ /])(" words ")( |$)"
 }
 
 FILENAME == plan {
@@ -44,8 +44,16 @@ FILENAME == cwds { CWD[$1] = $2; next }
 
 # resurrect escapes the first space of a path and `echo`s it unquoted (squeezing blanks)
 function norm(p) { gsub(/\\ /, " ", p); gsub(/  +/, " ", p); return p }
-function mentions_ai(c) { return c ~ /(^|[ \/])(claude|kiro-cli)( |$)/ }
-function cold_launch(c) { return c ~ /(^|[ \/])kiro-cli( |$)/ ? kiro_base : claude_base }
+function mentions_ai(c) { return c ~ AI_RE }
+# cold_launch(c): the base command of the tool whose word appears first in command c
+function cold_launch(c,    i, t, best, at) {
+    best = ALL[1]; at = 0
+    for (i = 1; i <= NT; i++) {
+        t = ALL[i]
+        if (match(c, "(^|[ /])" MATCH[t] "( |$)") && (at == 0 || RSTART < at)) { at = RSTART; best = t }
+    }
+    return BASE[best]
+}
 function add_note(s) { note = note (note == "" ? "" : "; ") s }
 
 $1 == "pane" {

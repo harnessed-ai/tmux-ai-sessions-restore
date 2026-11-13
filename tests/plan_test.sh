@@ -113,10 +113,11 @@ t=$'\t'
   echo "%16${t}16000${t}s${t}4${t}4${t}vim${t}/p${t}${t}${t}"                # no AI
 } > "$W/panes"
 
+TOOLS="$ROOT/scripts/tools.tsv"
 run_plan() { # [extra awk -v assignments...]
-    awk -v psc="$W/psc" -v psa="$W/psa" -v panes="$W/panes" -v enabled="claude kiro" \
-        -v claude_base=claude -v kiro_base="kiro-cli chat" -v fallback=on "$@" \
-        -f "$ROOT/scripts/plan.awk" "$W/psc" "$W/psa" "$W/panes"
+    awk -v tools="$TOOLS" -v psc="$W/psc" -v psa="$W/psa" -v panes="$W/panes" -v enabled="claude kiro" \
+        -v fallback=on "$@" \
+        -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc" "$W/psa" "$W/panes"
 }
 run_plan > "$W/plan"
 
@@ -156,12 +157,28 @@ check "@ai-restore-cold-fallback unset: off by default" "$(col 1.3 11 "$W/plan.n
 run_plan -v fallback=off > "$W/plan.nofallback"
 check "@ai-restore-cold-fallback off" "$(col 2.3 11 "$W/plan.nofallback")" "kiro-cli chat --resume-id kiro-abc"
 
-run_plan -v claude_base="claude --dangerously-skip-permissions" > "$W/plan.base"
+run_plan -v bases="claude=claude --dangerously-skip-permissions" > "$W/plan.base"
 check "@ai-restore-claude-command is the launch prefix" "$(col 1.4 11 "$W/plan.base")" \
     "claude --dangerously-skip-permissions --resume $U6 || claude --dangerously-skip-permissions"
 
-awk -v psc="$W/psc" -v psa="$W/psa" -v panes="$W/panes" -v enabled="claude" \
-    -f "$ROOT/scripts/plan.awk" "$W/psc" "$W/psa" "$W/panes" > "$W/plan.claudeonly"
+awk -v tools="$TOOLS" -v psc="$W/psc" -v psa="$W/psa" -v panes="$W/panes" -v enabled="claude" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc" "$W/psa" "$W/panes" > "$W/plan.claudeonly"
 check "disabled tool is left alone" "$(col 2.3 7 "$W/plan.claudeonly")" ""
+
+# A tool known only from a table row (nothing in the scripts names it): process match by
+# comm and by node script, a subcommand-style id, a --flag=value id, and its own base.
+{ cat "$TOOLS"; printf 'zed\t^zedcli$\tzedcli --tui\tgo {id}\tgo,--sid\t-\tsafe\tzedcli\t-\n'; } > "$W/tools3"
+printf ' 1000     1 -zsh\n 1001  1000 zedcli\n 2000     1 -zsh\n 2001  2000 node\n 3000     1 -zsh\n 3001  3000 node\n' > "$W/psc3"
+printf ' 1000 -zsh\n 1001 zedcli go z-123\n 2000 -zsh\n 2001 node /opt/bin/zedcli --sid=z-9\n 3000 -zsh\n 3001 node /opt/lib/index.js go z-5\n' > "$W/psa3"
+{
+  echo "%1${t}1000${t}s${t}9${t}1${t}zedcli${t}/p${t}${t}${t}"
+  echo "%2${t}2000${t}s${t}9${t}2${t}node${t}/p${t}zed${t}z-77${t}2001"
+  echo "%3${t}3000${t}s${t}9${t}3${t}node${t}/p${t}${t}${t}"
+} > "$W/panes3"
+awk -v tools="$W/tools3" -v psc="$W/psc3" -v psa="$W/psa3" -v panes="$W/panes3" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc3" "$W/psa3" "$W/panes3" > "$W/plan3"
+check "table-only tool: subcommand id from argv" "$(col 9.1 7 "$W/plan3"):$(col 9.1 11 "$W/plan3")" "zed:zedcli --tui go z-123"
+check "table-only tool: node script matched, live marker wins" "$(col 9.2 9 "$W/plan3"):$(col 9.2 11 "$W/plan3")" "marker:zedcli --tui go z-77"
+check "table-only tool: node running another script is not it" "$(col 9.3 7 "$W/plan3")" ""
 
 if [ "$fail" -eq 0 ]; then echo "PASS"; else echo "FAILURES"; exit 1; fi

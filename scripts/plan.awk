@@ -6,7 +6,9 @@
 #   psa   = `ps -Ao pid=,command=`
 #   panes = `tmux list-panes -a -F "$AIR_PANE_FORMAT"`:
 #           pane_id pane_pid session window pane cur_cmd cur_path @ai_tool @ai_session_id @ai_pid
-# Vars: enabled ("claude kiro"), claude_base, kiro_base, fallback ("on" appends `|| <base>`; anything else, the default, does not)
+# Vars: tools, bases (see tools.awk, which must be loaded first: -f tools.awk -f plan.awk),
+#       enabled (space-separated tool names; empty = every tool in tools.tsv),
+#       fallback ("on" appends `|| <base>`; anything else, the default, does not)
 #
 # Output, one tab-separated line per pane:
 #   session window pane pane_pid cur_cmd cur_path tool tool_pid source id command first_child
@@ -21,7 +23,8 @@
 #      marker left behind by a CLI that has since exited belongs to an older conversation.
 #      (Markers from before @ai_pid existed are trusted while the tool is running.)
 #   2. Otherwise the id on the running CLI's own command line (`claude --resume <id>`,
-#      `kiro-cli chat --resume-id <id>`), i.e. a restored pane nobody has typed in since.
+#      `kiro-cli chat --resume-id <id>`; the tool's id_flags/pin_flags in tools.tsv), i.e. a
+#      restored pane nobody has typed in since.
 #   3. Otherwise no id: the pane gets a plain cold launch of the base command.
 # The command is always just the configured base command plus the id — never the running
 # CLI's own flags. Replaying scraped argv is fragile (ps flattens it, so quoting and values
@@ -30,17 +33,15 @@
 
 BEGIN {
     FS = "\t"; OFS = "\t"
-    ntools = split(enabled, TOOLS, " ")
-    RE["claude"] = "^claude$"
-    RE["kiro"] = "^kiro-cli(-chat)?$"
-    BASE["claude"] = claude_base == "" ? "claude" : claude_base
-    BASE["kiro"] = kiro_base == "" ? "kiro-cli chat" : kiro_base
+    ntools = 0
+    if (enabled == "") for (i = 1; i <= NT; i++) TOOLS[++ntools] = ALL[i]
+    else {
+        n = split(enabled, E, " ")
+        for (i = 1; i <= n; i++) if (E[i] in RE) TOOLS[++ntools] = E[i]   # unknown names: ignored
+    }
 }
 
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-function firstword(s) { sub(/[ \t].*/, "", s); return s }
-function basename(s) { sub(/.*\//, "", s); return s }
-function argv0(a) { a = basename(firstword(a)); sub(/^-/, "", a); return a }
 
 FILENAME == psc {
     l = trim($0); pid = firstword(l); l = trim(substr(l, length(pid) + 1))
@@ -56,7 +57,7 @@ FILENAME == psa {
 }
 FILENAME == panes { plan_pane(); next }
 
-function is_tool(pid, t) { return (pid in comm) && (comm[pid] ~ RE[t] || argv0(args[pid]) ~ RE[t]) }
+function is_tool(pid, t) { return (pid in comm) && air_is_cli(t, comm[pid], args[pid]) }
 function tool_enabled(t,    i) { for (i = 1; i <= ntools; i++) if (TOOLS[i] == t) return 1; return 0 }
 # ids end up inside a shell command that restore types into the pane: allow nothing else
 function safe_id(id) { return id ~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ }
@@ -81,31 +82,41 @@ function scan(root,    Q, h, t, x, n, K, i, j) {
     }
 }
 
-# argv_id(tool, argv): the session id a running CLI was started with, or "".
+function id_ok(tool, id) { return IDFMT[tool] == "uuid" ? is_uuid(id) : safe_id(id) }
+
+# opt_value(flags, A, n, i): if word A[i] is one of the comma-separated flags, the value it
+# carries (`--f v`, or `--f=v` for a `--` flag; a bare word is a subcommand: `resume v`).
+function opt_value(flags, A, n, i,    F, k, j, f) {
+    if (flags == "") return ""
+    k = split(flags, F, ",")
+    for (j = 1; j <= k; j++) {
+        f = F[j]
+        if (A[i] == f) return (i < n ? A[i + 1] : "")
+        if (f ~ /^--/ && index(A[i], f "=") == 1) return substr(A[i], length(f) + 2)
+    }
+    return ""
+}
+
+# argv_id(tool, argv): the session id a running CLI was started with, or "". A value that
+# isn't a valid id for the tool doesn't count (e.g. claude -r <search term> opens a picker),
+# and a resume id beats a pinned one.
 function argv_id(tool, a,    n, A, i, v, pinned) {
     n = split(a, A, " "); pinned = ""
     for (i = 2; i <= n; i++) {
-        v = ""
-        if (tool == "claude") {
-            # -r/--resume also opens a picker with a search term, so only a UUID counts
-            if ((A[i] == "--resume" || A[i] == "-r") && i < n) v = A[i + 1]
-            else if (A[i] ~ /^--resume=/) v = substr(A[i], 10)
-            else if (A[i] == "--session-id" && i < n && is_uuid(A[i + 1])) pinned = A[i + 1]
-            else if (A[i] ~ /^--session-id=/ && is_uuid(substr(A[i], 14))) pinned = substr(A[i], 14)
-            if (v != "" && is_uuid(v)) return v
-        } else {
-            if (A[i] == "--resume-id" && i < n) v = A[i + 1]
-            else if (A[i] ~ /^--resume-id=/) v = substr(A[i], 13)
-            if (v != "" && safe_id(v)) return v
-        }
+        v = opt_value(IDFLAGS[tool], A, n, i)
+        if (v != "" && id_ok(tool, v)) return v
+        v = opt_value(PINFLAGS[tool], A, n, i)
+        if (v != "" && id_ok(tool, v)) pinned = v
     }
     return pinned
 }
 
-function build(tool, id,    base) {
+function build(tool, id,    base, r, k) {
     base = BASE[tool]
     if (id == "") return base
-    return base " " (tool == "kiro" ? "--resume-id" : "--resume") " " id (fallback == "on" ? " || " base : "")
+    r = RESUME[tool]; k = index(r, "{id}")
+    if (k) r = substr(r, 1, k - 1) id substr(r, k + 4)
+    return base " " r (fallback == "on" ? " || " base : "")
 }
 
 function plan_pane(    pane_pid, mtool, mid, mpid, tool, tpid, src, id, live, i, cmd, child) {

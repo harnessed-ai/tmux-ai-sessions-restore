@@ -3,6 +3,9 @@
 # Matches our own capture_session.sh command, so unrelated hooks are left untouched.
 
 set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/helpers.sh
+. "$HERE/helpers.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "✗ jq is required"; exit 1; }
 
@@ -45,6 +48,8 @@ uninstall_kiro() {
 	done
 }
 
-uninstall_claude
-uninstall_kiro
+for tool in $(air_tools); do
+	if declare -F "uninstall_$tool" >/dev/null; then "uninstall_$tool"
+	else echo "• $tool: no uninstall_$tool in uninstall_hooks.sh — skipping"; fi
+done
 echo "Done. (The tmux @resurrect-hook-post-save-all entry is removed when you remove the plugin and restart tmux.)"
