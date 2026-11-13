@@ -8,7 +8,8 @@ windows, panes and working directories. But an AI CLI running in a pane comes ba
 **cold** — a brand-new, empty conversation. This plugin is the missing layer: it makes
 `claude` and `kiro-cli chat` relaunch **resumed**, in the same pane, where you left off.
 
-Supports **Claude Code** (`claude`), **Kiro CLI** (`kiro-cli chat`) and **OpenCode** (`opencode`).
+Supports **Claude Code** (`claude`), **Kiro CLI** (`kiro-cli chat`), **OpenCode** (`opencode`) and
+**OpenAI Codex CLI** (`codex`).
 
 ![tmux-ai-sessions-restore demo](./demo.gif)
 
@@ -175,6 +176,9 @@ learn a pane's session id. On first load it registers them for you (idempotent):
 - `~/.config/opencode/plugins/tmux-ai-sessions-restore.js` — OpenCode has no shell hooks, so
   this small plugin (a copy of `scripts/opencode_plugin.js`) runs the same capture script on
   each prompt; subagent sessions are skipped
+- `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) — a `UserPromptSubmit` hook. **Codex
+  skips a new hook until you trust it:** start `codex`, open `/hooks` and approve it once
+  (again if the plugin later moves to another path). Until then Codex panes come back cold.
 
 Each hook only stamps a tmux pane-option and does nothing else. To manage it yourself
 instead of letting the plugin do it:
@@ -199,6 +203,7 @@ bash "$DIR/scripts/uninstall_hooks.sh"   # remove them anytime
 | `@ai-restore-claude-command` | `claude` | Launch command every restored Claude pane starts with (`<command> --resume <id>`). The running CLI's own flags are not carried over, so put any you always want here, e.g. `claude --dangerously-skip-permissions`. |
 | `@ai-restore-kiro-command` | `kiro-cli chat` | Launch command for Kiro, likewise (`<command> --resume-id <id>`). |
 | `@ai-restore-opencode-command` | `opencode` | Launch command for OpenCode (`<command> --session <id>`). |
+| `@ai-restore-codex-command` | `codex` | Launch command for Codex (`<command> resume <id>`). |
 | `@ai-restore-cold-fallback` | `off` | `on` appends `\|\| <cold launch>`, so an expired/invalid id starts a new, empty session instead of erroring. Off by default: a failed resume leaves Claude's error at a shell prompt rather than an empty session you might mistake for the real one. |
 | `@ai-restore-auto-install` | `on` | Auto-register capture hooks on plugin load. |
 

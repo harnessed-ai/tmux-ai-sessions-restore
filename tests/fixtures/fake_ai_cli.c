@@ -1,5 +1,5 @@
 /*
- * fake_ai_cli.c — stand-in for the AI CLIs (`claude`, `kiro-cli chat`, `opencode`) used by the
+ * fake_ai_cli.c — stand-in for the AI CLIs (`claude`, `kiro-cli chat`, `opencode`, `codex`) used by the
  * adversarial tests.
  *
  * Compiled into binaries literally named after each CLI, so the process name (comm),
@@ -7,7 +7,7 @@
  * only what the restore layer depends on:
  *
  *   - session ids: a fresh launch gets a new id; `--resume <id>` / `-r <id>` / `--resume=<id>`
- *     (claude), `chat --resume-id <id>` (kiro) or `--session <id>` / `-s <id>` (opencode) resumes that id without forking, like the
+ *     (claude), `chat --resume-id <id>` (kiro) `--session <id>` / `-s <id>` (opencode) or `resume <id>` (codex) resumes that id without forking, like the
  *     real CLIs; `--session-id <id>` pins one; `-c` / `--continue` (kiro: `-r`) picks the
  *     newest transcript in the cwd.
  *   - resume is scoped to the cwd: transcripts live at $FAKE_AI_HOME/<tool>/<cwd-slug>/<id>,
@@ -36,12 +36,12 @@
 static char sid[128];
 static char cwd[PATH_MAX];
 static char argvline[8192];
-enum tool { T_CLAUDE, T_KIRO, T_OPENCODE };
+enum tool { T_CLAUDE, T_KIRO, T_OPENCODE, T_CODEX };
 static enum tool tool;
 static int is_kiro;
 
 static const char *tool_name(void) {
-    static const char *names[] = {"claude", "kiro", "opencode"};
+    static const char *names[] = {"claude", "kiro", "opencode", "codex"};
     return names[tool];
 }
 
@@ -178,7 +178,8 @@ int main(int argc, char **argv) {
     char line[4096];
 
     base = base ? base + 1 : argv[0];
-    tool = !strcmp(base, "kiro-cli") ? T_KIRO : !strcmp(base, "opencode") ? T_OPENCODE : T_CLAUDE;
+    tool = !strcmp(base, "kiro-cli") ? T_KIRO : !strcmp(base, "opencode") ? T_OPENCODE
+         : !strcmp(base, "codex") ? T_CODEX : T_CLAUDE;
     is_kiro = tool == T_KIRO;
     if (!getcwd(cwd, sizeof cwd)) strcpy(cwd, "?");
     argvline[0] = 0;
@@ -198,8 +199,23 @@ int main(int argc, char **argv) {
         print_mode = 1;
         i++;
     }
+    if (tool == T_CODEX && i < argc && !strcmp(argv[i], "exec")) { /* one-shot, like -p */
+        print_mode = 1;
+        i++;
+    } else if (tool == T_CODEX && i < argc && !strcmp(argv[i], "resume")) {
+        i++;
+        if (i < argc && !strcmp(argv[i], "--last")) { cont = 1; i++; }
+        else if (i < argc && argv[i][0] != '-') resume = argv[i++];
+        else { fprintf(stderr, "fake codex: resume picker not emulated\n"); return 3; }
+    }
     for (; i < argc; i++) {
         const char *a = argv[i];
+        if (tool == T_CODEX) {
+            if (!strcmp(a, "-c") || !strcmp(a, "-m") || !strcmp(a, "--model") || !strcmp(a, "-s") ||
+                !strcmp(a, "-a") || !strcmp(a, "-C")) { if (i + 1 < argc) i++; }
+            else if (a[0] != '-') { positional = a; npos++; }
+            continue;
+        }
         if (tool == T_OPENCODE) {
             if ((!strcmp(a, "--session") || !strcmp(a, "-s")) && i + 1 < argc) resume = argv[++i];
             else if (!strncmp(a, "--session=", 10)) resume = a + 10;

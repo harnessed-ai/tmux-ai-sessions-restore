@@ -4,7 +4,7 @@
 # Spins up PRIVATE tmux servers (tmux -L <socket>, env -i, scratch HOME, scratch
 # @resurrect-dir) that load the REAL tmux-resurrect plus the plugin under test, and fills
 # them with the kind of workspace that runs for weeks: 3 sessions, 10 windows, 40 panes,
-# most of them running a fake `claude` / `kiro-cli` / `opencode` (tests/fixtures/fake_ai_cli.c, compiled
+# most of them running a fake `claude` / `kiro-cli` / `opencode` / `codex` (fake_ai_cli.c, compiled
 # to binaries with exactly those names, so ps / tmux / resurrect see what they'd see for the
 # real CLIs). Panes then go through what long-lived panes go through: prompts, /clear,
 # /resume, exits and relaunches, a positional first prompt, a nested `claude -p` run by the
@@ -61,7 +61,8 @@ for rc in .zshrc .bashrc .bash_profile; do printf 'export PATH="%s:$PATH"\n' "$B
 "$CC_BIN" -O -o "$BIN/claude" "$ROOT/tests/fixtures/fake_ai_cli.c" || { echo "FAIL: compile fake CLI"; exit 1; }
 "$CC_BIN" -O -o "$BIN/kiro-cli" "$ROOT/tests/fixtures/fake_ai_cli.c" || exit 1
 "$CC_BIN" -O -o "$BIN/opencode" "$ROOT/tests/fixtures/fake_ai_cli.c" || exit 1
-FAKE_CLIS="claude kiro-cli opencode"
+"$CC_BIN" -O -o "$BIN/codex" "$ROOT/tests/fixtures/fake_ai_cli.c" || exit 1
+FAKE_CLIS="claude kiro-cli opencode codex"
 
 T() { "$TMUX_BIN" -L "$SOCK" "$@"; }
 
@@ -215,6 +216,10 @@ scn_opencode_fresh()  { cdp "$1" "$2"; start_ai "$1" opencode launch; prompt_ai 
                         expect "$1" opencode_fresh opencode resume "$(last_sid "$1")" "$2" ""; }
 scn_opencode_restored() { local o; o="$(seed opencode "$2")"; cdp "$1" "$2"; start_ai "$1" "opencode -s $o" resume
                         prompt_ai "$1" more; expect "$1" opencode_restored opencode resume "$o" "$2" ""; }
+scn_codex_fresh()     { cdp "$1" "$2"; start_ai "$1" "codex -c model_reasoning_effort=high" launch; prompt_ai "$1" hi
+                        expect "$1" codex_fresh codex resume "$(last_sid "$1")" "$2" "-c"; }
+scn_codex_restored()  { local o; o="$(seed codex "$2")"; cdp "$1" "$2"; start_ai "$1" "codex resume $o" resume
+                        expect "$1" codex_restored codex resume "$o" "$2" ""; }
 scn_nested_print()    { local outer n; cdp "$1" "$2"; start_ai "$1" claude launch; prompt_ai "$1" hello
                         outer="$(last_sid "$1")"; n="$(ev_count "$1" exit)"
                         sk "$1" "!claude -p nested-question"   # the session's Bash tool runs a one-shot claude
@@ -224,8 +229,8 @@ scn_fallback_then_prompt() { cdp "$1" "$2"; start_ai "$1" "claude --resume 00000
                         prompt_ai "$1" hello
                         expect "$1" fallback_then_prompt claude resume "$(last_sid "$1")" "$2" ""; }
 
-SCENARIOS="fresh_prompted fresh_prompted fresh_prompted nested_print fresh_idle fresh_idle
-restored_idle restored_idle restored_prompted restored_prompted
+SCENARIOS="fresh_prompted fresh_prompted codex_fresh nested_print fresh_idle fresh_idle
+restored_idle codex_restored restored_prompted restored_prompted
 restored_clear restored_clear opencode_fresh opencode_restored restored_switch restored_switch
 flags_restored_clear flags_restored_clear exit_relaunch_resume exit_relaunch_resume
 exit_to_shell exit_to_shell exit_relaunch_fresh exit_relaunch_fresh positional positional

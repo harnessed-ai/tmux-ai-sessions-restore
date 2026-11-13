@@ -15,11 +15,10 @@ command -v jq >/dev/null 2>&1 || { echo "✗ jq is required"; exit 1; }
 MARKER="capture_session.sh"
 tools="$*"   # optional tool names (default: every tool in tools.tsv)
 
-# Strip our capture command from every Claude hook event (handles current
-# UserPromptSubmit and any legacy SessionStart entries), dropping empty groups.
-uninstall_claude() {
-	local settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-	[ -f "$settings" ] || return
+# remove_hook_groups <json file>: strip our capture command from every event of a Claude-style
+# hooks layout (Claude, Codex, Gemini), dropping groups left empty. Returns 1 if no file.
+remove_hook_groups() {
+	[ -f "$1" ] || return 1
 	local tmp; tmp="$(mktemp)"
 	jq --arg m "$MARKER" '
 		if (.hooks? | type) == "object" then
@@ -28,8 +27,21 @@ uninstall_claude() {
 				          | map(select((.hooks | length) > 0)) )
 			)
 		else . end
-	' "$settings" > "$tmp" && mv "$tmp" "$settings"
+	' "$1" > "$tmp" && mv "$tmp" "$1"
+}
+
+# Strip our capture command from every Claude hook event (handles current
+# UserPromptSubmit and any legacy SessionStart entries), dropping empty groups.
+uninstall_claude() {
+	local settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+	remove_hook_groups "$settings" || return 0
 	echo "✓ Removed Claude hook from $settings"
+}
+
+uninstall_codex() {
+	local file="${CODEX_HOME:-$HOME/.codex}/hooks.json"
+	remove_hook_groups "$file" || return 0
+	echo "✓ Removed Codex hook from $file"
 }
 
 # Strip our capture command from every Kiro hook event (userPromptSubmit and legacy

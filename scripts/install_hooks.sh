@@ -36,21 +36,27 @@ install_claude() {
 		return
 	fi
 	local settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-	local cmd="bash \"$CAP\" claude"
-	mkdir -p "$(dirname "$settings")"
-	[ -f "$settings" ] || echo '{}' > "$settings"
-	local tmp; tmp="$(mktemp)"
-	# Drop any prior capture_session.sh entry (even one at a different path — e.g. the plugin
-	# moved between ~/.tmux/plugins and ~/.config/tmux/plugins), then add exactly one. This
-	# keeps re-installs from a new location idempotent instead of stacking duplicate hooks.
-	jq --arg cmd "$cmd" '
+	add_hook_group "$settings" UserPromptSubmit "bash \"$CAP\" claude"
+	echo "✓ Claude UserPromptSubmit hook → $settings"
+}
+
+# add_hook_group <json file> <event> <command>: the Claude-style hooks layout that Codex and
+# Gemini share — .hooks[<event>] is a list of { hooks: [ { type: "command", command } ] }.
+# Drops any prior capture_session.sh entry (even one at a different path — e.g. the plugin
+# moved between ~/.tmux/plugins and ~/.config/tmux/plugins), then adds exactly one. This
+# keeps re-installs from a new location idempotent instead of stacking duplicate hooks.
+add_hook_group() {
+	local file="$1" event="$2" cmd="$3" tmp
+	mkdir -p "$(dirname "$file")"
+	[ -f "$file" ] || echo '{}' > "$file"
+	tmp="$(mktemp)"
+	jq --arg ev "$event" --arg cmd "$cmd" '
 		.hooks = (.hooks // {})
-		| .hooks.UserPromptSubmit = ([
-			.hooks.UserPromptSubmit[]?
+		| .hooks[$ev] = ([
+			.hooks[$ev][]?
 			| select( any(.hooks[]?; (.command // "") | contains("capture_session.sh")) | not )
 		  ] + [ { "hooks": [ { "type": "command", "command": $cmd } ] } ])
-	' "$settings" > "$tmp" && mv "$tmp" "$settings"
-	echo "✓ Claude UserPromptSubmit hook → $settings"
+	' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 check_claude() {
@@ -106,6 +112,27 @@ check_kiro() {
 	local f state=missing
 	for f in "$HOME"/.kiro/agents/*.json; do [ "$(hook_state "$f")" = present ] && state=present; done
 	report kiro kiro-cli "$state" "$HOME/.kiro/agents/<default agent>.json"
+}
+
+# Codex reads ~/.codex/hooks.json (or $CODEX_HOME/hooks.json). It runs a new or changed hook
+# only after you trust it once in its /hooks screen, and skips it (with a startup warning)
+# until then — so say so loudly.
+codex_hooks_file() { printf '%s/hooks.json' "${CODEX_HOME:-$HOME/.codex}"; }
+
+install_codex() {
+	if ! command -v codex >/dev/null 2>&1; then
+		echo "• codex not found — skipping Codex hook"
+		return
+	fi
+	local file; file="$(codex_hooks_file)"
+	add_hook_group "$file" UserPromptSubmit "bash \"$CAP\" codex"
+	echo "✓ Codex UserPromptSubmit hook → $file"
+	echo "  ! Codex skips new hooks until you trust them: run codex, open /hooks, and approve it"
+	echo "    (again whenever the plugin moves to a different path)."
+}
+
+check_codex() {
+	report codex codex "$(hook_state "$(codex_hooks_file)")" "$(codex_hooks_file)" "Codex runs it only once trusted in /hooks"
 }
 
 # OpenCode loads plugin files from <config dir>/plugins/ (OPENCODE_CONFIG_DIR, when set, is

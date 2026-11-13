@@ -236,4 +236,56 @@ check "opencode --prompt \"run tests\" is interactive (run only counts as the su
 check "a pane running only claude -p restores as a plain shell" "$(col 2.2 7 "$W/plan4")$(col 2.2 11 "$W/plan4")" ""
 check "opencode run inside an opencode pane: the TUI is tracked" "$(col 2.3 8 "$W/plan4"):$(col 2.3 10 "$W/plan4")" "7001:ses_out"
 
+# codex: `resume <id>` is a subcommand; npm installs a node shim that runs the native binary.
+cat > "$W/psc5" <<'EOF'
+ 1000     1 -zsh
+ 1001  1000 codex
+ 2000     1 -zsh
+ 2001  2000 codex
+ 3000     1 -zsh
+ 3001  3000 codex
+ 4000     1 -zsh
+ 4001  4000 codex
+ 5000     1 -zsh
+ 5001  5000 node
+ 5002  5001 codex
+ 6000     1 -zsh
+ 6001  6000 node
+ 6002  6001 codex
+EOF
+cat > "$W/psa5" <<EOF
+ 1000 -zsh
+ 1001 codex resume $U1
+ 2000 -zsh
+ 2001 codex exec fix the tests
+ 3000 -zsh
+ 3001 codex resume --last
+ 4000 -zsh
+ 4001 codex -m o3 resume the work
+ 5000 -zsh
+ 5001 node /opt/homebrew/bin/codex resume $U2
+ 5002 /opt/homebrew/lib/node_modules/@openai/codex/vendor/aarch64-apple-darwin/codex/codex resume $U2
+ 6000 -zsh
+ 6001 node /opt/homebrew/bin/codex
+ 6002 /opt/homebrew/lib/node_modules/@openai/codex/vendor/aarch64-apple-darwin/codex/codex
+EOF
+{
+  echo "%1${t}1000${t}c${t}1${t}1${t}codex${t}/p${t}${t}${t}"
+  echo "%2${t}2000${t}c${t}1${t}2${t}codex${t}/p${t}${t}${t}"
+  echo "%3${t}3000${t}c${t}1${t}3${t}codex${t}/p${t}${t}${t}"
+  echo "%4${t}4000${t}c${t}1${t}4${t}codex${t}/p${t}${t}${t}"
+  echo "%5${t}5000${t}c${t}2${t}1${t}node${t}/p${t}${t}${t}"
+  echo "%6${t}6000${t}c${t}2${t}2${t}node${t}/p${t}codex${t}thr_abc123${t}6002"
+} > "$W/panes5"
+awk -v tools="$TOOLS" -v psc="$W/psc5" -v psa="$W/psa5" -v panes="$W/panes5" -v bases="codex=codex --yolo" \
+    -f "$ROOT/scripts/tools.awk" -f "$ROOT/scripts/plan.awk" "$W/psc5" "$W/psa5" "$W/panes5" > "$W/plan5"
+check "codex: resume <id> subcommand on the command line" "$(col 1.1 9 "$W/plan5"):$(col 1.1 11 "$W/plan5")" \
+    "argv:codex --yolo resume $U1"
+check "codex exec is a one-shot run, not the pane's CLI" "$(col 1.2 7 "$W/plan5")" ""
+check "codex resume --last: no id, cold launch" "$(col 1.3 10 "$W/plan5"):$(col 1.3 11 "$W/plan5")" ":codex --yolo"
+check "codex: 'resume the' from a prompt is not an id" "$(col 1.4 10 "$W/plan5")" ""
+check "codex npm shim: the shallowest codex (node script) is tracked" "$(col 2.1 8 "$W/plan5"):$(col 2.1 10 "$W/plan5")" "5001:$U2"
+check "codex npm shim: marker from the native child is live" "$(col 2.2 9 "$W/plan5"):$(col 2.2 11 "$W/plan5")" \
+    "marker:codex --yolo resume thr_abc123"
+
 if [ "$fail" -eq 0 ]; then echo "PASS"; else echo "FAILURES"; exit 1; fi
