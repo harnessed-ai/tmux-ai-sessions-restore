@@ -10,9 +10,9 @@ AI CLIs relaunch **resumed**, in the same pane, where you left off.
 
 | CLI | Restored as | Capture hook (registered for you) | Notes |
 | --- | --- | --- | --- |
-| **Claude Code** | `claude --resume <id>` | the shared agent hook in `~/.claude/settings.json` | [shared](#claude-code-and-kiro-the-shared-agent-hook) |
-| **Kiro CLI** | `kiro-cli chat --resume-id <id>` | the shared agent hook in your default `~/.kiro/agents/*.json` | [shared](#claude-code-and-kiro-the-shared-agent-hook) |
-| **OpenCode** | `opencode --session <id>` | plugin file in `~/.config/opencode/plugins/` | OpenCode has no shell hooks |
+| **Claude Code** | `claude --resume <id>` | the shared agent hook in `~/.claude/settings.json` | [shared](#claude-code-kiro-and-opencode-the-shared-agent-hook) |
+| **Kiro CLI** | `kiro-cli chat --resume-id <id>` | the shared agent hook in your default `~/.kiro/agents/*.json` | [shared](#claude-code-kiro-and-opencode-the-shared-agent-hook) |
+| **OpenCode** | `opencode --session <id>` | the shared agent hook's plugin in `~/.config/opencode/plugins/` | [shared](#claude-code-kiro-and-opencode-the-shared-agent-hook); OpenCode has no shell hooks |
 | **OpenAI Codex CLI** | `codex resume <id>` | `UserPromptSubmit` in `~/.codex/hooks.json` | **trust it once in `/hooks`** |
 | **Gemini CLI** | `gemini --resume <id>` | `BeforeAgent` in `~/.gemini/settings.json` | |
 
@@ -48,7 +48,7 @@ flowchart TD
 
 1. **Capture** — each tool's own prompt hook (Codex `UserPromptSubmit`, Gemini
    `BeforeAgent`, an OpenCode plugin; for Claude Code and Kiro, the
-   [shared agent hook](#claude-code-and-kiro-the-shared-agent-hook)) runs *inside the pane*, so
+   [shared agent hook](#claude-code-kiro-and-opencode-the-shared-agent-hook)) runs *inside the pane*, so
    it knows `$TMUX_PANE`. On every prompt it
    stamps the live session id onto that pane as tmux pane-options (`@ai_session_id`,
    `@ai_tool`; `@agent_session_id`, `@agent_tool` from the shared hook), plus the pid of the
@@ -187,21 +187,23 @@ learn a pane's session id. On first load it registers them for you (idempotent):
 - `~/.claude/settings.json` — the shared agent hook, one entry per lifecycle event (see below)
 - your default Kiro agent `~/.kiro/agents/kiro_default.json` — the shared agent hook
   (the agent is materialised from the built-in default if you don't already have one on disk)
-- `~/.config/opencode/plugins/tmux-ai-sessions-restore.js` — OpenCode has no shell hooks, so
-  this small plugin (a copy of `scripts/opencode_plugin.js`) runs the same capture script on
-  each prompt; subagent sessions are skipped
+- `~/.config/opencode/plugins/harnessed-ai-agent-hook.js` — OpenCode has no shell hooks, so
+  the shared agent hook's small plugin translates its events (your prompt, permission
+  prompts, turn end…); subagent sessions are skipped
 - `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`) — a `UserPromptSubmit` hook. **Codex
   skips a new hook until you trust it:** start `codex`, open `/hooks` and approve it once
   (again if the plugin later moves to another path). Until then Codex panes come back cold.
+  This plugin keeps its own Codex hook even when a sibling plugin has also registered the
+  shared agent hook for Codex, so resuming never depends on an approval you haven't given.
 - `~/.gemini/settings.json` (home is `$GEMINI_CLI_HOME` when set) — a `BeforeAgent` hook
   (it prints `{}`, since Gemini reads a hook's stdout as JSON)
 
 A CLI that isn't installed is skipped; when a later version of the plugin adds a CLI, its
 hook is registered on the next tmux start.
 
-#### Claude Code and Kiro: the shared agent hook
+#### Claude Code, Kiro and OpenCode: the shared agent hook
 
-Claude Code and Kiro report through `scripts/agent-hook.sh`, a hook shared by the
+Claude Code, Kiro and OpenCode report through `agent-hook.sh`, a hook shared by the
 harnessed-ai tmux plugins: each one that uses it ships an identical copy. It writes
 `@agent_*` pane options (state, name, session id, pid…), and this plugin reads
 `@agent_session_id`, which is recorded on your first prompt (or at once for a resumed
@@ -209,14 +211,16 @@ session), so a pane is still only marked once there is a conversation to resume.
 several such plugins installed, each agent event runs **one** hook instead of one per
 plugin:
 
-- it is registered once per event, and a copy is never replaced by an older one;
-- each loaded plugin advertises its copy in `@agent-hook-provider-<plugin>`, so
-  uninstalling one hands the hook over to another that is still loaded instead of
-  removing it;
+- it is installed at one fixed path (`${XDG_DATA_HOME:-~/.local/share}/harnessed-ai/agent-hook.sh`)
+  that every CLI's config points at, and only ever replaced by a newer version;
+- each loaded plugin advertises itself in `@agent-hook-provider-<plugin>`, so
+  uninstalling one leaves the hook in place while another still uses it; the last one
+  out removes it;
 - an up-to-date config is left untouched, so reloading tmux doesn't rewrite it.
 
 Upgrading from an older version: the first tmux start after the update re-runs the
-installer once, replacing the old `capture_session.sh` entries for Claude and Kiro.
+installer once, replacing the old `capture_session.sh` entries for Claude and Kiro and
+the old OpenCode capture plugin.
 Panes captured before the switch keep working: when a pane has no shared session id,
 its older `@ai_*` marker is used. `bash scripts/install_hooks.sh --check` (also
 part of `scripts/diagnose.sh`) shows what is registered where.

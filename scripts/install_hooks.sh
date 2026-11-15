@@ -5,11 +5,12 @@
 # We hook the prompt event (Claude UserPromptSubmit / Kiro userPromptSubmit / ...) rather
 # than session start, so a pane is only marked once its session actually has a transcript.
 #
-# Claude Code and Kiro report through the shared harnessed-ai hook (scripts/agent-hook.sh,
+# Claude Code, Kiro and OpenCode report through the shared harnessed-ai hook (scripts/agent-hook.sh,
 # an identical copy of which other tmux plugins ship too): it records @agent_session_id on
 # the first prompt, and rewrite_save.sh reads that. With several such plugins installed,
-# each agent event runs one hook instead of one per plugin. The other CLIs keep our own
-# capture_session.sh.
+# each agent event runs one hook instead of one per plugin. Codex and Gemini keep our own
+# capture_session.sh (Codex skips a changed hook until it is approved again in /hooks, so
+# its capture stays put; the shared hook covers Codex too once installed by a sibling).
 #
 # One install_<tool> (and check_<tool>) function per tool in tools.tsv; a CLI that isn't
 # installed is skipped. Idempotent and reversible (see uninstall_hooks.sh). You launch the
@@ -181,32 +182,31 @@ check_gemini() {
 	report gemini gemini "$(hook_state "$file")" "$file"
 }
 
-# OpenCode loads plugin files from <config dir>/plugins/ (OPENCODE_CONFIG_DIR, when set, is
-# an extra config dir it also loads).
+# Our own OpenCode capture plugin from older versions (OpenCode loads plugin files from
+# <config dir>/plugins/; OPENCODE_CONFIG_DIR, when set, is an extra config dir it also loads).
 opencode_plugin_file() {
 	printf '%s/plugins/tmux-ai-sessions-restore.js' "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 }
 
-# OpenCode has no shell hooks: install a plugin (scripts/opencode_plugin.js, with the path of
-# this checkout's capture_session.sh filled in) that runs capture_session.sh on each prompt.
+# OpenCode has no shell hooks: the shared agent hook installs its adapter plugin
+# (agent-hook-opencode.js), replacing our old capture plugin.
 install_opencode() {
 	if ! command -v opencode >/dev/null 2>&1; then
 		echo "• opencode not found — skipping OpenCode plugin"
 		return
 	fi
-	local file cap tmp
-	file="$(opencode_plugin_file)"
-	cap="$(jq -rn --arg p "$CAP" '$p | tojson | .[1:-1]')"   # JS-string-escaped path
-	mkdir -p "$(dirname "$file")"
-	tmp="$(mktemp)"
-	CAP_ESC="$cap" awk '{ i = index($0, "__CAPTURE__"); if (i) $0 = substr($0, 1, i - 1) ENVIRON["CAP_ESC"] substr($0, i + 11); print }' \
-		"$HERE/opencode_plugin.js" > "$tmp" && mv "$tmp" "$file"
-	echo "✓ OpenCode capture plugin → $file"
+	# OpenCode reports through the shared agent hook's adapter plugin (no approval needed);
+	# our own capture plugin from older versions goes.
+	local old; old="$(opencode_plugin_file)"
+	[ -f "$old" ] && grep -q 'capture_session' "$old" 2>/dev/null && rm -f "$old" && echo "  removed our old capture plugin $old"
+	shared_hook opencode
+	echo "✓ OpenCode reports through the shared agent hook's plugin"
 }
 
 check_opencode() {
-	local file; file="$(opencode_plugin_file)"
-	report opencode opencode "$(hook_state "$file")" "$file"
+	local file
+	file="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/plugins/harnessed-ai-agent-hook.js"
+	report opencode opencode "$(hook_state "$file" agent-hook.sh)" "$file" "shared agent hook"
 }
 
 for tool in ${tools:-$(air_tools)}; do

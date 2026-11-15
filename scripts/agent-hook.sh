@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-hook-version: 4
+# agent-hook-version: 5
 # agent-hook.sh <tool> [event]
 # agent-hook.sh --seen <pane>
 #
@@ -18,7 +18,10 @@
 #   @agent_pid         pid of the agent CLI (lets readers drop state left by a crash)
 #
 # Register it for every lifecycle event of the agent. The event comes from the hook
-# payload's hook_event_name (Claude and Kiro both send it) or from the second argument.
+# payload's hook_event_name (Claude, Kiro and Codex send it) or from the second argument.
+# Codex's events have Claude's names; OpenCode has no shell hooks, so a small plugin
+# (agent-hook-opencode.js) translates its events into the same names. A payload's
+# session_title (OpenCode) becomes @agent_name.
 #
 # Runs inside the agent's pane, so $TMUX_PANE names the pane. Must never fail or print:
 # hook stdout can be injected into the conversation, and a failing hook can block it.
@@ -63,6 +66,8 @@ fi
 tool="${1:-}"
 event="${2:-}"
 [ -n "$tool" ] || exit 0
+# Codex reads a Stop hook's stdout and requires JSON there; an empty object changes nothing.
+[ "$tool" = codex ] && [ "$event" = Stop ] && printf '{}\n'
 [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || exit 0
 command -v tmux >/dev/null 2>&1 || exit 0
 command -v jq   >/dev/null 2>&1 || exit 0
@@ -72,12 +77,12 @@ json="$(cat)"
 [ -n "$json" ] || json='{}'
 
 # One jq pass pulls everything we might need, \x1f-separated.
-IFS=$'\x1f' read -r ev session_id transcript ntype source activity < <(
+IFS=$'\x1f' read -r ev session_id transcript ntype source title activity < <(
 	printf '%s' "$json" | jq -rj '
 		def short: tostring | split("\n")[0] | if length > 60 then .[0:59] + "…" else . end;
 		(.tool_input // {}) as $i
 		| ( if ($i | type) != "object" then ""
-		    elif $i.command then $i.command
+		    elif $i.command then ($i.command | if type == "array" then join(" ") else . end)
 		    elif $i.file_path then ($i.file_path | tostring | split("/") | last)
 		    elif $i.path then ($i.path | tostring | split("/") | last)
 		    elif $i.pattern then $i.pattern
@@ -90,6 +95,7 @@ IFS=$'\x1f' read -r ev session_id transcript ntype source activity < <(
 		    (.transcript_path // ""),
 		    (.notification_type // ""),
 		    (.source // ""),
+		    (.session_title // ""),
 		    ( if (.tool_name // "") == "" then ""
 		      elif $arg == "" then .tool_name
 		      else "\(.tool_name): \($arg)" end ) ]
@@ -119,6 +125,7 @@ find_cli_pid() {
 		claude) re='^claude$' ;;
 		kiro)   re='^kiro-cli(-chat)?$' ;;
 		codex)  re='^codex$' ;;
+		opencode) re='^opencode$' ;;
 		*)      re="^${tool}\$" ;;
 	esac
 	pid="$PPID"
@@ -169,8 +176,16 @@ identify() { # identify [with-session]
 	if [ -n "$pid" ]; then
 		# A one-shot run inside the pane (claude -p from the Bash tool, --bg) fires the same
 		# hooks; it must not take over the interactive agent's pane.
-		case " $(ps -o args= -p "$pid" 2>/dev/null) " in
+		local args; args="$(ps -o args= -p "$pid" 2>/dev/null)"
+		case " $args " in
 			*' -p '*|*' --print '*|*' --bg '*|*' --background '*|*' --no-interactive '*) exit 0 ;;
+		esac
+		# Subcommand one-shots: `codex exec …`, `opencode run …` and the like.
+		local words sub=""; read -ra words <<< "$args"
+		for a in "${words[@]:1}"; do case "$a" in -*) ;; *) sub="$a"; break ;; esac; done
+		case "$tool:$sub" in
+			codex:exec|codex:e|codex:app-server|codex:mcp-server) exit 0 ;;
+			opencode:run|opencode:serve|opencode:web|opencode:acp) exit 0 ;;
 		esac
 		set_opt @agent_pid "$pid"
 	fi
@@ -228,6 +243,9 @@ case "$event" in
 	stopfailure)
 		set_state error
 		;;
+	sessiontitle)
+		# OpenCode renamed the session; the name is applied below.
+		;;
 	sessionend)
 		foreign && exit 0
 		for o in @agent_tool @agent_state @agent_state_since @agent_name @agent_activity \
@@ -240,6 +258,9 @@ case "$event" in
 		exit 0
 		;;
 esac
+
+# A name the agent reports in the payload (OpenCode's session title).
+[ -n "$title" ] && [ "$event" != sessionend ] && set_opt @agent_name "$title"
 
 [ "${#cmds[@]}" -gt 0 ] && tmux "${cmds[@]}" 2>/dev/null
 [ "$new_state" != "$cur_state" ] && notify "$pane"

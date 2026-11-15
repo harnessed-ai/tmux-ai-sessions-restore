@@ -34,6 +34,8 @@ remove_hook_groups() {
 # that ships it is still loaded, the hook is handed over to that plugin's copy; otherwise
 # it is removed.
 shared_unhook() {
+	# Only when you named tools; a full uninstall does the whole shared hook once, below.
+	[ -n "$tools" ] || return 0
 	AGENT_HOOK_TOOLS="$1" bash "$HERE/uninstall-hooks.sh" --provider sessions-restore | sed 's/^/  /'
 }
 
@@ -75,8 +77,10 @@ uninstall_kiro() {
 	done
 }
 
-# Remove our OpenCode plugin file (only if it is ours), from plugins/ and the older plugin/.
+# OpenCode: the shared agent hook's plugin, plus our own capture plugin from older versions
+# (only if it is ours), from plugins/ and the older plugin/.
 uninstall_opencode() {
+	shared_unhook opencode
 	local d f
 	d="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 	for f in "$d/plugins/tmux-ai-sessions-restore.js" "$d/plugin/tmux-ai-sessions-restore.js"; do
@@ -90,4 +94,10 @@ for tool in ${tools:-$(air_tools)}; do
 	if declare -F "uninstall_$tool" >/dev/null; then "uninstall_$tool"
 	else echo "• $tool: no uninstall_$tool in uninstall_hooks.sh — skipping"; fi
 done
+# Full uninstall: stop using the shared agent hook. If no other harnessed-ai plugin uses it
+# any more, it is unregistered from every CLI (Codex too, if a sibling registered it) and
+# its shared copy removed; otherwise it stays for them.
+if [ -z "$tools" ]; then
+	env -u AGENT_HOOK_TOOLS bash "$HERE/uninstall-hooks.sh" --provider sessions-restore | sed 's/^/  /'
+fi
 echo "Done. (The tmux @resurrect-hook-post-save-all entry is removed when you remove the plugin and restart tmux.)"

@@ -83,8 +83,8 @@ if [ -n "$add" ]; then
 	tmux set-option -g '@resurrect-processes' "${procs# }"
 fi
 
-# Advertise our copy of the shared agent hook (Claude Code, Kiro), so another plugin's
-# uninstall can hand the hook over to it instead of removing it.
+# Tell the other harnessed-ai plugins we use the shared agent hook (Claude Code, Kiro,
+# OpenCode), so uninstalling one of them leaves it in place.
 tmux set-option -g @agent-hook-provider-sessions-restore "$CURRENT_DIR/scripts/agent-hook.sh"
 
 # Register the capture hooks once (idempotent). Backgrounded so tmux startup never blocks;
@@ -93,8 +93,9 @@ tmux set-option -g @agent-hook-provider-sessions-restore "$CURRENT_DIR/scripts/a
 # (an older, empty stamp counts as "not this list").
 auto_install="$(tmux show-option -gqv '@ai-restore-auto-install' 2>/dev/null)"
 stamp="$CURRENT_DIR/.hooks_installed"
-# "+agent-hook": Claude/Kiro moved onto the shared agent hook, so existing installs re-run once.
-all_tools="$(air_tools) +agent-hook"
+# "+agent-hook2": Claude, Kiro and OpenCode on the shared agent hook, at its fixed path;
+# changing it makes existing installs re-run once.
+all_tools="$(air_tools) +agent-hook2"
 if [ "$auto_install" != "off" ] && [ "$(cat "$stamp" 2>/dev/null)" != "$all_tools" ]; then
 	tmux run-shell -b "bash '$CURRENT_DIR/scripts/install_hooks.sh' >/dev/null 2>&1 && printf '%s' '$all_tools' > '$stamp'"
 fi

@@ -1,48 +1,34 @@
 #!/usr/bin/env bash
-# uninstall-hooks.sh [--provider NAME] — stop this plugin providing agent-hook.sh.
+# uninstall-hooks.sh [--provider NAME] — stop this plugin using the shared agent hook.
 #
-# The hook is shared by the harnessed-ai plugins. Each loaded plugin advertises its copy
-# in the tmux option @agent-hook-provider-<name>. --provider NAME drops our own
-# advertisement first. If another provider is still loaded, the hook is handed over to
-# its copy (the highest agent-hook-version wins) so that plugin keeps working; only when
-# no provider is left are the entries removed from Claude Code and Kiro CLI configs.
-# Entries are matched by script name, not path, so copies from any checkout are found.
+# Each loaded harnessed-ai plugin advertises itself in the tmux option
+# @agent-hook-provider-<name>; --provider NAME drops ours first. While another plugin
+# still uses the hook, nothing else changes: the hook lives in one shared place
+# (see install-hooks.sh), so there is nothing to hand over. When no plugin is left, the
+# hook is unregistered from every CLI (Claude Code, Kiro, Codex, OpenCode) and the shared
+# copy is removed. Entries are matched by script name, not path, so copies registered by
+# older versions (from a plugin's own folder) are removed too. AGENT_HOOK_TOOLS limits the
+# unregistering to some CLIs (and then keeps the shared copy).
 
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MINE="$HERE/agent-hook.sh"
 MARKER="agent-hook.sh"
+SHARED="${AGENT_HOOK_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/harnessed-ai}"
 command -v jq >/dev/null 2>&1 || { echo "✗ jq is required"; exit 1; }
 
 if [ "${1:-}" = --provider ] && [ -n "${2:-}" ]; then
 	tmux set-option -gu "@agent-hook-provider-$2" 2>/dev/null || true
 fi
 
-hook_version() {
-	local v
-	v="$(sed -n '2s/^# agent-hook-version: *\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null)"
-	printf '%s' "${v:-1}"
-}
-
-# Another loaded plugin's copy (highest version), if any.
-other=""
-while read -r name; do
-	[ -n "$name" ] || continue
-	path="$(tmux show-options -gqv "$name" 2>/dev/null || true)"
-	[ -n "$path" ] && [ "$path" != "$MINE" ] && [ -f "$path" ] || continue
-	if [ -z "$other" ] || [ "$(hook_version "$path")" -gt "$(hook_version "$other")" ]; then
-		other="$path"
-	fi
-done < <(tmux show-options -g 2>/dev/null | sed -n 's/^\(@agent-hook-provider-[^ ]*\) .*/\1/p')
-
-if [ -n "$other" ]; then
-	echo "• another plugin still provides agent-hook.sh — handing over to $other"
-	exec bash "$HERE/install-hooks.sh" --hook "$other"
+others="$(tmux show-options -g 2>/dev/null | sed -n 's/^@agent-hook-provider-\([^ ]*\) .*/\1/p' | paste -sd, - || true)"
+if [ -n "$others" ]; then
+	echo "• the shared agent hook is still used by: $others — leaving it in place"
+	exit 0
 fi
 
-uninstall_claude() {
-	local settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-	[ -f "$settings" ] || return 0
+# Claude-style layout (Claude Code, Codex): strip our command, drop emptied groups/events.
+remove_groups() {
+	[ -f "$1" ] || return 0
+	jq -e --arg m "$MARKER" '[.. | objects | .command? // empty | strings | select(contains($m))] | length > 0' "$1" >/dev/null 2>&1 || return 0
 	local tmp; tmp="$(mktemp)"
 	jq --arg m "$MARKER" '
 		if (.hooks? | type) == "object" then
@@ -51,9 +37,12 @@ uninstall_claude() {
 				          | map(select((.hooks | length) > 0)) ))
 			| .hooks |= with_entries(select((.value | length) > 0))
 		else . end
-	' "$settings" > "$tmp" && mv "$tmp" "$settings"
-	echo "✓ Removed Claude hooks from $settings"
+	' "$1" > "$tmp" && mv "$tmp" "$1"
+	echo "✓ Removed $2 hooks from $1"
 }
+
+uninstall_claude() { remove_groups "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" Claude; }
+uninstall_codex()  { remove_groups "${CODEX_HOME:-$HOME/.codex}/hooks.json" Codex; }
 
 uninstall_kiro() {
 	local f
@@ -71,9 +60,24 @@ uninstall_kiro() {
 	done
 }
 
-for t in ${AGENT_HOOK_TOOLS:-claude kiro}; do
+uninstall_opencode() {
+	local f
+	f="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/plugins/harnessed-ai-agent-hook.js"
+	[ -f "$f" ] && rm -f "$f" && echo "✓ Removed OpenCode plugin $f"
+	return 0
+}
+
+for t in ${AGENT_HOOK_TOOLS:-claude kiro codex opencode}; do
 	case "$t" in
-		claude) uninstall_claude ;;
-		kiro)   uninstall_kiro ;;
+		claude)   uninstall_claude ;;
+		kiro)     uninstall_kiro ;;
+		codex)    uninstall_codex ;;
+		opencode) uninstall_opencode ;;
 	esac
 done
+
+if [ -z "${AGENT_HOOK_TOOLS:-}" ]; then
+	rm -f "$SHARED/agent-hook.sh" "$SHARED/agent-hook-opencode.js"
+	rmdir "$SHARED" 2>/dev/null || true
+	echo "✓ Removed the shared agent hook ($SHARED)"
+fi

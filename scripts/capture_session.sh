@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # capture_session.sh <tool>
 #
-# Used for the CLIs that don't report through the shared agent hook (OpenCode, Codex,
-# Gemini). Claude Code and Kiro use scripts/agent-hook.sh instead, which writes
+# Used for the CLIs that don't report through the shared agent hook (Codex, Gemini).
+# Claude Code, Kiro and OpenCode use scripts/agent-hook.sh instead, which writes
 # @agent_session_id; helpers.sh's AIR_PANE_FORMAT prefers that and falls back to ours.
 #
 # Invoked by the AI CLI's prompt hook (Claude UserPromptSubmit / Kiro userPromptSubmit / ...,
