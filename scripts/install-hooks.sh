@@ -121,6 +121,8 @@ install_codex() {
 	if register_groups "$file" codex "${CODEX_EVENTS[@]}"; then
 		echo "✓ Codex hooks (${CODEX_EVENTS[*]}) → $file"
 		echo "  ! Codex ignores new hooks until you approve them: run codex, open /hooks, approve."
+		echo "  ! Codex runs sessions in a shared background server; the hook then finds the pane by"
+		echo "    folder. For exact tracking (two Codex in one folder), run: alias codex='codex --no-daemon'"
 	else
 		echo "• Codex hooks already installed"
 	fi

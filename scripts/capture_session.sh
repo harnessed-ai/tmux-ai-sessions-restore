@@ -60,6 +60,12 @@ done
 # What counts as one-shot is the tool's oneshot column in tools.tsv.
 if [ -n "$cli_pid" ] && air_is_oneshot "$tool" "$cli_args"; then exit 0; fi
 
+# Codex (0.169+) normally runs sessions inside one shared background server, which also runs
+# this hook: $TMUX_PANE is then whichever pane first started that server, not this
+# session's. Stamping it would mark the wrong pane, so skip; the shared agent hook finds the
+# right pane in that case (and `codex --no-daemon` keeps everything in the pane).
+case "$tool: $cli_args " in codex:*" app-server "*) exit 0 ;; esac
+
 tmux set-option -p -t "$TMUX_PANE" '@ai_tool' "$tool" \; \
      set-option -p -t "$TMUX_PANE" '@ai_session_id' "$id" \; \
      set-option -p -t "$TMUX_PANE" '@ai_pid' "$cli_pid" \; \

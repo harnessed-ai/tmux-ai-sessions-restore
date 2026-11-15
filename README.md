@@ -195,6 +195,12 @@ learn a pane's session id. On first load it registers them for you (idempotent):
   (again if the plugin later moves to another path). Until then Codex panes come back cold.
   This plugin keeps its own Codex hook even when a sibling plugin has also registered the
   shared agent hook for Codex, so resuming never depends on an approval you haven't given.
+  **Codex's shared background server:** Codex (0.169+) normally runs sessions inside one
+  shared server that also runs the hooks, so a hook can't tell which pane it belongs to.
+  This plugin's own Codex hook then records nothing (rather than marking the wrong pane);
+  the shared agent hook, if installed, finds the pane by the session's folder, and a
+  Codex pane you haven't prompted since a restore still resumes from its command line.
+  For exact capture, run Codex in the pane itself: `alias codex='codex --no-daemon'`.
 - `~/.gemini/settings.json` (home is `$GEMINI_CLI_HOME` when set) — a `BeforeAgent` hook
   (it prints `{}`, since Gemini reads a hook's stdout as JSON)
 

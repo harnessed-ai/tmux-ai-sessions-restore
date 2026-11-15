@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-hook-version: 5
+# agent-hook-version: 6
 # agent-hook.sh <tool> [event]
 # agent-hook.sh --seen <pane>
 #
@@ -22,6 +22,13 @@
 # Codex's events have Claude's names; OpenCode has no shell hooks, so a small plugin
 # (agent-hook-opencode.js) translates its events into the same names. A payload's
 # session_title (OpenCode) becomes @agent_name.
+#
+# Codex (0.169+) normally runs every session inside one shared background server, which
+# also runs the hooks — so $TMUX_PANE is whatever pane first started that server. When
+# the hook sees it was started by that server, it ignores $TMUX_PANE and finds the pane
+# itself: the pane already carrying this session id, else the one pane running Codex in
+# the session's folder. Unsure (two Codex sessions in one folder) → it writes nothing.
+# `codex --no-daemon` runs the session in the pane itself, which is always exact.
 #
 # Runs inside the agent's pane, so $TMUX_PANE names the pane. Must never fail or print:
 # hook stdout can be injected into the conversation, and a failing hook can block it.
@@ -68,7 +75,26 @@ event="${2:-}"
 [ -n "$tool" ] || exit 0
 # Codex reads a Stop hook's stdout and requires JSON there; an empty object changes nothing.
 [ "$tool" = codex ] && [ "$event" = Stop ] && printf '{}\n'
-[ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || exit 0
+# Was this hook started by Codex's shared app-server (not by a process in the pane)?
+codex_daemon() {
+	local pid="$PPID" args
+	for _ in 1 2 3 4 5 6 7 8; do
+		case "$pid" in ''|0|1) return 1 ;; esac
+		args="$(ps -o args= -p "$pid" 2>/dev/null)" || return 1
+		case " $args " in *" app-server "*) case "$args" in *codex*) return 0 ;; esac ;; esac
+		pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+	done
+	return 1
+}
+daemon=""
+if [ "$tool" = codex ] && codex_daemon; then
+	daemon=1
+	# The server's $TMUX may name a tmux server that has since gone: use the default then.
+	[ -S "${TMUX%%,*}" ] || unset TMUX
+	unset TMUX_PANE
+else
+	[ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || exit 0
+fi
 command -v tmux >/dev/null 2>&1 || exit 0
 command -v jq   >/dev/null 2>&1 || exit 0
 exec >/dev/null 2>&1
@@ -77,7 +103,7 @@ json="$(cat)"
 [ -n "$json" ] || json='{}'
 
 # One jq pass pulls everything we might need, \x1f-separated.
-IFS=$'\x1f' read -r ev session_id transcript ntype source title activity < <(
+IFS=$'\x1f' read -r ev session_id transcript ntype source title payload_cwd activity < <(
 	printf '%s' "$json" | jq -rj '
 		def short: tostring | split("\n")[0] | if length > 60 then .[0:59] + "…" else . end;
 		(.tool_input // {}) as $i
@@ -96,6 +122,7 @@ IFS=$'\x1f' read -r ev session_id transcript ntype source title activity < <(
 		    (.notification_type // ""),
 		    (.source // ""),
 		    (.session_title // ""),
+		    (.cwd // ""),
 		    ( if (.tool_name // "") == "" then ""
 		      elif $arg == "" then .tool_name
 		      else "\(.tool_name): \($arg)" end ) ]
@@ -105,7 +132,55 @@ IFS=$'\x1f' read -r ev session_id transcript ntype source title activity < <(
 [ -n "$event" ] || event="$ev"
 event="$(printf '%s' "$event" | tr '[:upper:]' '[:lower:]' | tr -d '_-')"
 
-pane="$TMUX_PANE"
+# Codex via its shared server: which pane is this session in?
+daemon_cli_pid=""
+codex_pane() {
+	local sid="$session_id" want="" hits panes procs pid ppid args name p pn d i a words m=""
+	# 1) a pane that already carries this session
+	if [ -n "$sid" ]; then
+		hits="$(tmux list-panes -a -F "#{pane_id}"$'\t'"#{@agent_session_id}"$'\t'"#{@agent_pid}" 2>/dev/null |
+			awk -F'\t' -v s="$sid" '$2 == s')"
+		if [ -n "$hits" ] && [ "$(printf '%s\n' "$hits" | wc -l | tr -d ' ')" = 1 ]; then
+			pane="$(printf '%s' "$hits" | cut -f1)"; daemon_cli_pid="$(printf '%s' "$hits" | cut -f3)"
+			return 0
+		fi
+	fi
+	# 2) the one pane whose Codex runs in this session's folder
+	[ -n "$payload_cwd" ] && want="$(cd "$payload_cwd" 2>/dev/null && pwd -P)"
+	[ -n "$want" ] || return 1
+	panes="$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)" || return 1
+	procs="$(ps -Ao pid=,ppid=,args= 2>/dev/null)"
+	while read -r pid ppid args; do
+		name="${args%% *}"; name="${name##*/}"
+		case "$name" in
+			node|bun|deno) read -ra words <<< "$args"
+				for a in "${words[@]:1}"; do case "$a" in -*) ;; *) name="${a##*/}"; break ;; esac; done ;;
+		esac
+		[ "$name" = codex ] || continue
+		case " $args " in *" app-server "*|*" exec "*) continue ;; esac
+		p="$pid"; pn=""
+		for i in 1 2 3 4 5 6 7 8; do
+			pn="$(awk -v p="$p" '$1 == p { print $2 }' <<< "$panes")"
+			[ -n "$pn" ] && break
+			p="$(awk -v p="$p" '$1 == p { print $2 }' <<< "$procs")"
+			case "$p" in ''|0|1) break ;; esac
+		done
+		[ -n "$pn" ] || continue
+		d="$(lsof -a -d cwd -p "$pid" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+		[ -n "$d" ] && d="$(cd "$d" 2>/dev/null && pwd -P)"
+		if [ "$d" = "$want" ]; then
+			[ -z "$m" ] || return 1   # two Codex sessions in this folder: can't tell which
+			m="$pn $pid"
+		fi
+	done <<< "$procs"
+	[ -n "$m" ] || return 1
+	pane="${m%% *}"; daemon_cli_pid="${m#* }"
+}
+if [ -n "$daemon" ]; then
+	codex_pane || exit 0
+else
+	pane="$TMUX_PANE"
+fi
 IFS=$'\x1f' read -r cur_state cur_pid seen_on focus_events < <(
 	tmux display-message -p -t "$pane" "#{@agent_state}"$'\x1f'"#{@agent_pid}"$'\x1f'"#{@agent-seen-on}"$'\x1f'"#{focus-events}" 2>/dev/null
 )
@@ -120,6 +195,8 @@ watched() {
 
 # The agent CLI process this hook belongs to: the nearest ancestor named like the tool.
 find_cli_pid() {
+	# Codex via its shared server: the pane's own Codex process, found by codex_pane.
+	if [ -n "$daemon" ]; then printf '%s' "$daemon_cli_pid"; return; fi
 	local re pid info ppid comm name args a words
 	case "$tool" in
 		claude) re='^claude$' ;;

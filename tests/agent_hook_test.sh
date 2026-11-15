@@ -87,6 +87,17 @@ PATH="$SHIM:$PATH" bash "$ROOT/scripts/rewrite_save.sh" "$SAVE"
 check "save file resumes it" "$(awk -F'\t' '{print $11}' "$SAVE")" \
 	":claude --resume 11111111-2222-3333-4444-555555555555"
 
+echo "Codex run by its shared server: our capture must not stamp the server's pane:"
+cp /bin/bash "$FAKE/codex-server"; command -v codesign >/dev/null 2>&1 && codesign --force -s - "$FAKE/codex-server" 2>/dev/null
+mkdir -p "$FAKE/srv"; ln -sf "$FAKE/codex-server" "$FAKE/srv/codex"
+STALE="$(T new-window -d -P -F '#{pane_id}')"
+printf '{"session_id":"thr_srv","cwd":"/x"}' > "$WORK/srv.json"
+TMUX="$TMUXSOCK,0,0" TMUX_PANE="$STALE" "$FAKE/srv/codex" -c "bash '$ROOT/scripts/capture_session.sh' codex < '$WORK/srv.json'" app-server
+check "stale pane not stamped" "$(T display -p -t "$STALE" '#{@ai_session_id}')" ""
+printf '{"session_id":"thr_tui","cwd":"/x"}' > "$WORK/tui.json"
+TMUX="$TMUXSOCK,0,0" TMUX_PANE="$STALE" "$FAKE/srv/codex" -c "bash '$ROOT/scripts/capture_session.sh' codex < '$WORK/tui.json'"
+check "  ... while Codex in the pane itself (--no-daemon) still is" "$(T display -p -t "$STALE" '#{@ai_session_id}')" "thr_tui"
+
 echo "uninstall:"
 T set -g @agent-hook-provider-sibling x            # another plugin still using the hook
 TMUX="$TMUXSOCK,0,0" PATH="$SHIM:$PATH" bash "$ROOT/scripts/uninstall_hooks.sh" claude opencode >/dev/null
