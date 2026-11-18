@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-hook-version: 6
+# agent-hook-version: 7
 # agent-hook.sh <tool> [event]
 # agent-hook.sh --seen <pane>
 #
@@ -29,6 +29,13 @@
 # itself: the pane already carrying this session id, else the one pane running Codex in
 # the session's folder. Unsure (two Codex sessions in one folder) → it writes nothing.
 # `codex --no-daemon` runs the session in the pane itself, which is always exact.
+#
+# Claude Code can move a running conversation into its background host ("parks" it as a
+# job); the pane then holds only a front-end, and the hooks run in the host, outside tmux
+# (no $TMUX_PANE). The pane is found through Claude's session files: the front-end's
+# records "parkedJobId" and its "tmux" pane, the background session's records "jobId".
+# Only hooks fired by that background session itself count (its pid is in its file), so a
+# one-shot `claude -p` started from inside it can't take over the pane.
 #
 # Runs inside the agent's pane, so $TMUX_PANE names the pane. Must never fail or print:
 # hook stdout can be injected into the conversation, and a failing hook can block it.
@@ -86,12 +93,15 @@ codex_daemon() {
 	done
 	return 1
 }
-daemon=""
+daemon="" parked=""
 if [ "$tool" = codex ] && codex_daemon; then
 	daemon=1
 	# The server's $TMUX may name a tmux server that has since gone: use the default then.
 	[ -S "${TMUX%%,*}" ] || unset TMUX
 	unset TMUX_PANE
+elif [ "$tool" = claude ] && [ -z "${TMUX_PANE:-}" ]; then
+	parked=1 # maybe Claude's background host; claude_parked_pane decides below
+	[ -S "${TMUX%%,*}" ] || unset TMUX
 else
 	[ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || exit 0
 fi
@@ -176,27 +186,13 @@ codex_pane() {
 	[ -n "$m" ] || return 1
 	pane="${m%% *}"; daemon_cli_pid="${m#* }"
 }
-if [ -n "$daemon" ]; then
-	codex_pane || exit 0
-else
-	pane="$TMUX_PANE"
-fi
-IFS=$'\x1f' read -r cur_state cur_pid seen_on focus_events < <(
-	tmux display-message -p -t "$pane" "#{@agent_state}"$'\x1f'"#{@agent_pid}"$'\x1f'"#{@agent-seen-on}"$'\x1f'"#{focus-events}" 2>/dev/null
-)
-new_state="$cur_state"
-
-# A turn that finishes in the pane you are looking at is already seen. Only knowable with
-# focus-events on (otherwise every attached client reports "focused").
-watched() {
-	[ "$seen_on" = focus ] && [ "$focus_events" = 1 ] || return 1
-	tmux list-clients -F "#{client_flags} #{pane_id}" 2>/dev/null | grep -q "focused.* $pane\$"
-}
-
 # The agent CLI process this hook belongs to: the nearest ancestor named like the tool.
 find_cli_pid() {
 	# Codex via its shared server: the pane's own Codex process, found by codex_pane.
 	if [ -n "$daemon" ]; then printf '%s' "$daemon_cli_pid"; return; fi
+	# Claude parked in its background host: the front-end in the pane (it's what the pane
+	# runs, and what one-shot checks and crash detection should look at).
+	if [ -n "$parked" ]; then printf '%s' "$parked_cli_pid"; return; fi
 	local re pid info ppid comm name args a words
 	case "$tool" in
 		claude) re='^claude$' ;;
@@ -224,6 +220,53 @@ find_cli_pid() {
 		pid="$ppid"
 	done
 }
+
+# Claude's background host: the pane of the front-end that parked this session.
+claude_parked_pane() {
+	local dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions" files job="" host bgpid fpid ref
+	[ -d "$dir" ] || return 1
+	files="$(cat "$dir"/*.json 2>/dev/null)" || return 1
+	job="${CLAUDE_JOB_DIR%/}"; job="${job##*/}"
+	if [ -z "$job" ] && [ -n "$session_id" ]; then
+		job="$(printf '%s' "$files" | jq -rs --arg s "$session_id" \
+			'map(select(.sessionId == $s and (.jobId // "") != "")) | .[0].jobId // empty' 2>/dev/null)"
+	fi
+	[ -n "$job" ] || return 1
+	# The hook must come from the background session itself, not a one-shot run inside it.
+	bgpid="$(printf '%s' "$files" | jq -rs --arg j "$job" \
+		'map(select(.jobId == $j)) | .[0].pid // empty' 2>/dev/null)"
+	host="$(parked="" find_cli_pid)"
+	[ -n "$bgpid" ] && [ "$host" = "$bgpid" ] || return 1
+	while read -r fpid ref; do
+		[ -n "$ref" ] && kill -0 "$fpid" 2>/dev/null || continue
+		pane="%${ref##*.%}"
+		if [ "$(tmux display-message -p -t "$pane" '#{pane_id}' 2>/dev/null)" = "$pane" ]; then
+			parked_cli_pid="$fpid"
+			return 0
+		fi
+	done < <(printf '%s' "$files" | jq -rs --arg j "$job" \
+		'.[] | select(.parkedJobId == $j and (.tmux // "") != "") | "\(.pid) \(.tmux)"' 2>/dev/null)
+	return 1
+}
+if [ -n "$daemon" ]; then
+	codex_pane || exit 0
+elif [ -n "$parked" ]; then
+	claude_parked_pane || exit 0
+else
+	pane="$TMUX_PANE"
+fi
+IFS=$'\x1f' read -r cur_state cur_pid seen_on focus_events < <(
+	tmux display-message -p -t "$pane" "#{@agent_state}"$'\x1f'"#{@agent_pid}"$'\x1f'"#{@agent-seen-on}"$'\x1f'"#{focus-events}" 2>/dev/null
+)
+new_state="$cur_state"
+
+# A turn that finishes in the pane you are looking at is already seen. Only knowable with
+# focus-events on (otherwise every attached client reports "focused").
+watched() {
+	[ "$seen_on" = focus ] && [ "$focus_events" = 1 ] || return 1
+	tmux list-clients -F "#{client_flags} #{pane_id}" 2>/dev/null | grep -q "focused.* $pane\$"
+}
+
 
 # Name the agent reports for this session. Claude: the last /rename in the transcript.
 session_name() {
